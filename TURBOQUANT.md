@@ -1,0 +1,9 @@
+# TurboQuant vendor notes
+
+- Nested llama.cpp SoT: `third_party/llama.cpp` → `git@github.com:atomicmilkshake/llama-cpp-turboquant.git` branch `feature/turboquant-kv-cache` (SHA recorded in gitlink).
+- Sync into `cpp/` via `npm run bootstrap` (patched for optional missing upstream files + `ggml-turbo-quant.c`).
+- JS allowlist: `cache_type_k/v` accepts `turbo2|turbo3|turbo4` (`src/index.ts`).
+- Native map: `cpp/rn-llama.cpp` `kv_cache_types` includes `LM_GGML_TYPE_TURBO{2,3,4}_0`.
+- Android CMake: optional `ggml-turbo-quant.c` / `ggml-backend-meta.cpp`.
+
+Recommended product KV: `cache_type_k: 'q8_0'`, `cache_type_v: 'turbo3'` (asymmetric).

@@ -1,7 +1,6 @@
 #import "ggml-metal-device.h"
 
 #import "ggml-impl.h"
-#import "ggml-backend-impl.h"
 
 #include <Foundation/Foundation.h>
 
@@ -96,8 +95,8 @@ int lm_ggml_metal_pipeline_max_theads_per_threadgroup(struct lm_ggml_metal_pipel
 
 struct lm_ggml_metal_library {
     id<MTLLibrary> obj;
+    id<MTLDevice> device;
 
-    lm_ggml_metal_device_t dev;
     lm_ggml_metal_pipelines_t pipelines; // cache of compiled pipelines
 
     NSLock * lock;
@@ -225,6 +224,43 @@ lm_ggml_metal_library_t lm_ggml_metal_library_init(lm_ggml_metal_device_t dev) {
                 [prep setObject:@"1" forKey:@"LM_GGML_METAL_EMBED_LIBRARY"];
 #endif
 
+                // TurboQuant: auto-select dequant path based on hardware
+                // M1/M2/M3/M4 (no tensor API): 4-mag LUT (+38-45% decode at long ctx)
+                // M5+ (has tensor API): 8-entry full LUT (best decode speed)
+                {
+                    const char * force_4mag = getenv("TURBO_FORCE_4MAG");
+                    // Always compile with 4-mag support. The dispatch code selects
+                    // 4-mag vs 8-LUT based on context depth at runtime.
+                    // Pre-M5: always 4-mag (constant cache too slow)
+                    // M5+: 4-mag for mid-context (8K-20K), 8-LUT otherwise
+                    if (!lm_ggml_metal_device_get_props(dev)->has_tensor || (force_4mag && force_4mag[0] == '1')) {
+                        [prep setObject:@"1" forKey:@"TURBO_USE_4MAG"];
+                        LM_GGML_LOG_INFO("%s: turbo3 using 4-mag LUT%s\n", __func__,
+                            force_4mag ? " (forced)" : " (pre-M5 hardware)");
+                    }
+                    // Sparse V dequant: skip V for negligible attention weights
+                    // Enabled by default on all Metal (validated: PPL identical, NIAH 9/9, 30+ testers)
+                    // Opt-out via TURBO_SPARSE_V=0
+                    const char * sparse_v_env = getenv("TURBO_SPARSE_V");
+                    const bool sparse_v_disabled = sparse_v_env && sparse_v_env[0] == '0';
+                    if (!sparse_v_disabled) {
+                        [prep setObject:@"1" forKey:@"TURBO_SPARSE_V"];
+                        LM_GGML_LOG_INFO("%s: turbo3 sparse V dequant enabled (opt-out: TURBO_SPARSE_V=0)\n", __func__);
+                    }
+                    // TODO: context-adaptive dispatch — compile both 4-mag and 8-LUT
+                    // FA kernel instantiations, select based on ne11 (KV cache size)
+                    // at dispatch time in lm_ggml_metal_op_flash_attn_ext()
+                }
+
+                // TurboQuant profiling: set TURBO_PROFILE_MODE env var (0-4)
+                {
+                    const char * pm = getenv("TURBO_PROFILE_MODE");
+                    if (pm && pm[0] >= '0' && pm[0] <= '4') {
+                        [prep setObject:[NSString stringWithUTF8String:pm] forKey:@"TURBO_PROFILE_MODE"];
+                        LM_GGML_LOG_INFO("%s: TURBO_PROFILE_MODE=%s\n", __func__, pm);
+                    }
+                }
+
                 MTLCompileOptions * options = [MTLCompileOptions new];
                 options.preprocessorMacros = prep;
 
@@ -252,7 +288,7 @@ lm_ggml_metal_library_t lm_ggml_metal_library_init(lm_ggml_metal_device_t dev) {
     lm_ggml_metal_library_t res = calloc(1, sizeof(struct lm_ggml_metal_library));
 
     res->obj       = library;
-    res->dev       = dev;
+    res->device    = device;
     res->pipelines = lm_ggml_metal_pipelines_init();
     res->lock      = [NSLock new];
 
@@ -319,7 +355,7 @@ lm_ggml_metal_library_t lm_ggml_metal_library_init_from_source(lm_ggml_metal_dev
     }
 
     res->obj       = library;
-    res->dev       = dev;
+    res->device    = device;
     res->pipelines = lm_ggml_metal_pipelines_init();
     res->lock      = [NSLock new];
 
@@ -340,10 +376,6 @@ void lm_ggml_metal_library_free(lm_ggml_metal_library_t lib) {
     [lib->lock release];
 
     free(lib);
-}
-
-lm_ggml_metal_device_t lm_ggml_metal_library_get_device(lm_ggml_metal_library_t lib) {
-    return lib->dev;
 }
 
 struct lm_ggml_metal_pipeline_with_params lm_ggml_metal_library_get_pipeline(lm_ggml_metal_library_t lib, const char * name) {
@@ -410,8 +442,7 @@ struct lm_ggml_metal_pipeline_with_params lm_ggml_metal_library_compile_pipeline
             return res;
         }
 
-        id<MTLDevice> device = lm_ggml_metal_device_get_obj(lib->dev);
-        id<MTLComputePipelineState> obj = [device newComputePipelineStateWithFunction:mtl_function error:&error];
+        id<MTLComputePipelineState> obj = [lib->device newComputePipelineStateWithFunction:mtl_function error:&error];
 
         [mtl_function release];
 
@@ -547,8 +578,6 @@ struct lm_ggml_metal_rsets {
     // number of seconds since the last graph computation
     // keep the residency sets wired for that amount of time to avoid being collected by the OS
     int keep_alive_s;
-    int loops_per_s;
-    int time_per_loop_ms;
 
     // background heartbeat thread to keep the residency sets alive
     atomic_bool d_stop;
@@ -575,13 +604,10 @@ lm_ggml_metal_rsets_t lm_ggml_metal_rsets_init(void) {
         res->keep_alive_s = 3*60;
     }
 
-    res->time_per_loop_ms = 5;
-    res->loops_per_s = 1000/res->time_per_loop_ms;
-
     LM_GGML_LOG_INFO("%s: creating a residency set collection (keep_alive = %d s)\n", __func__, res->keep_alive_s);
 
     atomic_store_explicit(&res->d_stop, false, memory_order_relaxed);
-    atomic_store_explicit(&res->d_loop, res->loops_per_s*res->keep_alive_s, memory_order_relaxed);
+    atomic_store_explicit(&res->d_loop, 2*res->keep_alive_s, memory_order_relaxed);
 
     res->d_group = dispatch_group_create();
 
@@ -604,7 +630,8 @@ lm_ggml_metal_rsets_t lm_ggml_metal_rsets_init(void) {
                       [res->lock unlock];
                   }
 
-                  usleep(res->time_per_loop_ms * 1000);
+                  // half a second
+                  usleep(500 * 1000);
               }
         }
 #endif
@@ -630,50 +657,6 @@ void lm_ggml_metal_rsets_free(lm_ggml_metal_rsets_t rsets) {
     [rsets->lock release];
 
     free(rsets);
-}
-
-static enum lm_ggml_metal_device_id lm_ggml_metal_device_id_parse(const char * name) {
-    if (!name) {
-        return LM_GGML_METAL_DEVICE_GENERIC;
-    }
-
-    static const char prefix[] = "Apple ";
-    if (strncmp(name, prefix, sizeof(prefix) - 1) != 0) {
-        return LM_GGML_METAL_DEVICE_GENERIC;
-    }
-    const char * suffix = name + sizeof(prefix) - 1;
-
-    static const struct {
-        const char * name;
-        enum lm_ggml_metal_device_id id;
-    } table[] = {
-        {"M1",       LM_GGML_METAL_DEVICE_M1},
-        {"M1 Pro",   LM_GGML_METAL_DEVICE_M1_PRO},
-        {"M1 Max",   LM_GGML_METAL_DEVICE_M1_MAX},
-        {"M1 Ultra", LM_GGML_METAL_DEVICE_M1_ULTRA},
-        {"M2",       LM_GGML_METAL_DEVICE_M2},
-        {"M2 Pro",   LM_GGML_METAL_DEVICE_M2_PRO},
-        {"M2 Max",   LM_GGML_METAL_DEVICE_M2_MAX},
-        {"M2 Ultra", LM_GGML_METAL_DEVICE_M2_ULTRA},
-        {"M3",       LM_GGML_METAL_DEVICE_M3},
-        {"M3 Pro",   LM_GGML_METAL_DEVICE_M3_PRO},
-        {"M3 Max",   LM_GGML_METAL_DEVICE_M3_MAX},
-        {"M3 Ultra", LM_GGML_METAL_DEVICE_M3_ULTRA},
-        {"M4",       LM_GGML_METAL_DEVICE_M4},
-        {"M4 Pro",   LM_GGML_METAL_DEVICE_M4_PRO},
-        {"M4 Max",   LM_GGML_METAL_DEVICE_M4_MAX},
-        {"M5",       LM_GGML_METAL_DEVICE_M5},
-        {"M5 Pro",   LM_GGML_METAL_DEVICE_M5_PRO},
-        {"M5 Max",   LM_GGML_METAL_DEVICE_M5_MAX},
-        {"M5 Ultra", LM_GGML_METAL_DEVICE_M5_ULTRA},
-    };
-
-    for (size_t i = 0; i < sizeof(table)/sizeof(table[0]); ++i) {
-        if (strcmp(suffix, table[i].name) == 0) {
-            return table[i].id;
-        }
-    }
-    return LM_GGML_METAL_DEVICE_GENERIC;
 }
 
 lm_ggml_metal_device_t lm_ggml_metal_device_init(int device) {
@@ -720,7 +703,7 @@ lm_ggml_metal_device_t lm_ggml_metal_device_init(int device) {
                 ![[dev->mtl_device name] containsString:@"M6"] &&
                 ![[dev->mtl_device name] containsString:@"A19"] &&
                 ![[dev->mtl_device name] containsString:@"A20"]) {
-                LM_GGML_LOG_INFO("%s: tensor API disabled for pre-M5 and pre-A19 devices\n", __func__);
+                LM_GGML_LOG_WARN("%s: tensor API disabled for pre-M5 and pre-A19 devices\n", __func__);
                 dev->props.has_tensor = false;
             }
 
@@ -744,7 +727,7 @@ lm_ggml_metal_device_t lm_ggml_metal_device_init(int device) {
                     "    auto tB = B.slice((int)tgid.x, 0); \n"
                     " \n"
                     "    matmul2d< \n"
-                    "        matmul2d_descriptor(16, 16, dynamic_extent), \n"
+                    "        matmul2d_descriptor(8, 8, dynamic_extent), \n"
                     "        execution_simdgroups<4>> mm; \n"
                     " \n"
                     "    auto cT = mm.get_destination_cooperative_tensor<decltype(tA), decltype(tB), float>(); \n"
@@ -753,7 +736,7 @@ lm_ggml_metal_device_t lm_ggml_metal_device_init(int device) {
                     "    auto sB = tB.slice(0, 0); \n"
                     "    mm.run(sB, sA, cT); \n"
                     " \n"
-                    "    auto tC = tensor<device float, dextents<int32_t, 2>, tensor_inline>(C, dextents<int32_t, 2>(16, 16)); \n"
+                    "    auto tC = tensor<device float, dextents<int32_t, 2>, tensor_inline>(C, dextents<int32_t, 2>(4, 4)); \n"
                     " \n"
                     "    cT.store(tC); \n"
                     "}";
@@ -794,7 +777,7 @@ lm_ggml_metal_device_t lm_ggml_metal_device_init(int device) {
                     "    auto tB = B.slice((int)tgid.x, 0); \n"
                     " \n"
                     "    matmul2d< \n"
-                    "        matmul2d_descriptor(16, 16, dynamic_extent), \n"
+                    "        matmul2d_descriptor(8, 8, dynamic_extent), \n"
                     "        execution_simdgroups<4>> mm; \n"
                     " \n"
                     "    auto cT = mm.get_destination_cooperative_tensor<decltype(tA), decltype(tB), float>(); \n"
@@ -803,7 +786,7 @@ lm_ggml_metal_device_t lm_ggml_metal_device_init(int device) {
                     "    auto sB = tB.slice(0, 0); \n"
                     "    mm.run(sB, sA, cT); \n"
                     " \n"
-                    "    auto tC = tensor<device float, dextents<int32_t, 2>, tensor_inline>(C, dextents<int32_t, 2>(16, 16)); \n"
+                    "    auto tC = tensor<device float, dextents<int32_t, 2>, tensor_inline>(C, dextents<int32_t, 2>(4, 4)); \n"
                     " \n"
                     "    cT.store(tC); \n"
                     "}";
@@ -843,8 +826,6 @@ lm_ggml_metal_device_t lm_ggml_metal_device_init(int device) {
 
             dev->props.supports_gpu_family_apple7 = [dev->mtl_device supportsFamily:MTLGPUFamilyApple7];
 
-            dev->props.device_id = lm_ggml_metal_device_id_parse([[dev->mtl_device name] UTF8String]);
-
             dev->props.op_offload_min_batch_size  = getenv("LM_GGML_OP_OFFLOAD_MIN_BATCH") ? atoi(getenv("LM_GGML_OP_OFFLOAD_MIN_BATCH")) : 32;
 
             dev->props.max_buffer_size            = dev->mtl_device.maxBufferLength;
@@ -870,7 +851,7 @@ lm_ggml_metal_device_t lm_ggml_metal_device_init(int device) {
             }
 
             // print MTL GPU family:
-            LM_GGML_LOG_INFO("%s: GPU name:   %s (%s)\n", __func__, dev->props.name, dev->props.desc);
+            LM_GGML_LOG_INFO("%s: GPU name:   %s\n", __func__, dev->props.name);
 
             // determine max supported GPU family
             // https://developer.apple.com/metal/Metal-Shading-Language-Specification.pdf
@@ -983,17 +964,17 @@ void lm_ggml_metal_device_rsets_keep_alive(lm_ggml_metal_device_t dev) {
         return;
     }
 
-    atomic_store_explicit(&dev->rsets->d_loop, dev->rsets->loops_per_s*dev->rsets->keep_alive_s, memory_order_relaxed);
+    atomic_store_explicit(&dev->rsets->d_loop, 2*dev->rsets->keep_alive_s, memory_order_relaxed);
 }
 
 struct lm_ggml_metal_event {
-    void * obj; // id<MTLSharedEvent>
+    void * obj; // id<MTLEvent>
 
     atomic_int value;
 };
 
 void lm_ggml_metal_event_encode_signal(lm_ggml_metal_event_t ev, lm_ggml_metal_cmd_buf_t cmd_buf_raw) {
-    id<MTLSharedEvent> event = (id<MTLSharedEvent>)ev->obj;
+    id<MTLEvent> event = (id<MTLEvent>)ev->obj;
 
     id<MTLCommandBuffer> cmd_buf = (id<MTLCommandBuffer>) cmd_buf_raw;
 
@@ -1001,7 +982,7 @@ void lm_ggml_metal_event_encode_signal(lm_ggml_metal_event_t ev, lm_ggml_metal_c
 }
 
 void lm_ggml_metal_event_encode_wait(lm_ggml_metal_event_t ev, lm_ggml_metal_cmd_buf_t cmd_buf_raw) {
-    id<MTLSharedEvent> event = (id<MTLSharedEvent>)ev->obj;
+    id<MTLEvent> event = (id<MTLEvent>)ev->obj;
 
     id<MTLCommandBuffer> cmd_buf = (id<MTLCommandBuffer>) cmd_buf_raw;
 
@@ -1009,7 +990,7 @@ void lm_ggml_metal_event_encode_wait(lm_ggml_metal_event_t ev, lm_ggml_metal_cmd
 }
 
 lm_ggml_metal_event_t lm_ggml_metal_device_event_init(lm_ggml_metal_device_t dev) {
-    id<MTLSharedEvent> event = [dev->mtl_device newSharedEvent];
+    id<MTLEvent> event = [dev->mtl_device newEvent];
 
     lm_ggml_metal_event_t ev = calloc(1, sizeof(struct lm_ggml_metal_event));
 
@@ -1020,7 +1001,7 @@ lm_ggml_metal_event_t lm_ggml_metal_device_event_init(lm_ggml_metal_device_t dev
 }
 
 void lm_ggml_metal_device_event_free(lm_ggml_metal_device_t dev, lm_ggml_metal_event_t ev) {
-    id<MTLSharedEvent> event = ev->obj;
+    id<MTLEvent> event = ev->obj;
     [event release];
 
     free(ev);
@@ -1029,13 +1010,14 @@ void lm_ggml_metal_device_event_free(lm_ggml_metal_device_t dev, lm_ggml_metal_e
 }
 
 void lm_ggml_metal_device_event_synchronize(lm_ggml_metal_device_t dev, lm_ggml_metal_event_t ev) {
-    id<MTLSharedEvent> event = ev->obj;
-    const bool res = [event waitUntilSignaledValue:atomic_load_explicit(&ev->value, memory_order_relaxed) timeoutMS:60000];
-    if (!res) {
-        LM_GGML_ABORT("%s: failed to wait for event\n", __func__);
-    }
+    @autoreleasepool {
+        id<MTLEvent> event = ev->obj;
 
-    LM_GGML_UNUSED(dev);
+        id<MTLCommandBuffer> cmd_buf = [dev->mtl_queue commandBuffer];
+        [cmd_buf encodeWaitForEvent:event value:atomic_load_explicit(&ev->value, memory_order_relaxed)];
+        [cmd_buf commit];
+        [cmd_buf waitUntilCompleted];
+    }
 }
 
 void lm_ggml_metal_device_get_memory(lm_ggml_metal_device_t dev, size_t * free, size_t * total) {
@@ -1098,7 +1080,6 @@ bool lm_ggml_metal_device_supports_op(lm_ggml_metal_device_t dev, const struct l
                 case LM_GGML_UNARY_OP_CEIL:
                 case LM_GGML_UNARY_OP_ROUND:
                 case LM_GGML_UNARY_OP_TRUNC:
-                case LM_GGML_UNARY_OP_XIELU:
                     return lm_ggml_is_contiguous_rows(op->src[0]) && (op->src[0]->type == LM_GGML_TYPE_F32 || op->src[0]->type == LM_GGML_TYPE_F16);
                 default:
                     return false;
@@ -1111,7 +1092,7 @@ bool lm_ggml_metal_device_supports_op(lm_ggml_metal_device_t dev, const struct l
                 case LM_GGML_GLU_OP_SWIGLU_OAI:
                 case LM_GGML_GLU_OP_GEGLU_ERF:
                 case LM_GGML_GLU_OP_GEGLU_QUICK:
-                    return lm_ggml_is_contiguous_1(op->src[0]) && (op->src[0]->type == LM_GGML_TYPE_F32 || op->src[0]->type == LM_GGML_TYPE_F16);
+                    return lm_ggml_is_contiguous_1(op->src[0]) && op->src[0]->type == LM_GGML_TYPE_F32;
                default:
                     return false;
             }
@@ -1120,28 +1101,8 @@ bool lm_ggml_metal_device_supports_op(lm_ggml_metal_device_t dev, const struct l
         case LM_GGML_OP_VIEW:
         case LM_GGML_OP_TRANSPOSE:
         case LM_GGML_OP_PERMUTE:
-            return true;
         case LM_GGML_OP_CONCAT:
-            {
-                const enum lm_ggml_type src0_type = op->src[0]->type;
-                const enum lm_ggml_type src1_type = op->src[1]->type;
-                if (src0_type != src1_type || src0_type != op->type) {
-                    return false;
-                }
-                switch (src0_type) {
-                    case LM_GGML_TYPE_F32:
-                    case LM_GGML_TYPE_F16:
-                    case LM_GGML_TYPE_I8:
-                    case LM_GGML_TYPE_I16:
-                    case LM_GGML_TYPE_I32:
-                    case LM_GGML_TYPE_I64:
-                        return true;
-                    case LM_GGML_TYPE_BF16:
-                        return has_bfloat;
-                    default:
-                        return false;
-                }
-            }
+            return true;
         case LM_GGML_OP_ADD:
         case LM_GGML_OP_SUB:
         case LM_GGML_OP_MUL:
@@ -1157,11 +1118,6 @@ bool lm_ggml_metal_device_supports_op(lm_ggml_metal_device_t dev, const struct l
                 (op->src[0]->type == LM_GGML_TYPE_F16 || op->src[0]->type == LM_GGML_TYPE_F32) &&
                 op->src[1]->type == LM_GGML_TYPE_F32 &&
                 op->type == LM_GGML_TYPE_F32;
-        case LM_GGML_OP_COL2IM_1D:
-            return (op->src[0]->type == LM_GGML_TYPE_F32 || op->src[0]->type == LM_GGML_TYPE_F16 || op->src[0]->type == LM_GGML_TYPE_BF16) &&
-                op->type == op->src[0]->type &&
-                lm_ggml_is_contiguous(op->src[0]) &&
-                lm_ggml_is_contiguous(op);
         case LM_GGML_OP_CONV_3D:
             return lm_ggml_is_contiguous(op->src[0]) &&
                    lm_ggml_is_contiguous(op->src[1]) &&
@@ -1189,17 +1145,12 @@ bool lm_ggml_metal_device_supports_op(lm_ggml_metal_device_t dev, const struct l
         case LM_GGML_OP_RMS_NORM:
             return has_simdgroup_reduction && (lm_ggml_is_contiguous_rows(op->src[0]));
         case LM_GGML_OP_ROPE:
-        case LM_GGML_OP_ROPE_BACK:
             return true;
         case LM_GGML_OP_IM2COL:
             return lm_ggml_is_contiguous(op->src[1]) && op->src[1]->type == LM_GGML_TYPE_F32 && (op->type == LM_GGML_TYPE_F16 || op->type == LM_GGML_TYPE_F32);
         case LM_GGML_OP_CONV_2D:
             return lm_ggml_is_contiguous(op->src[0]) &&
                    op->src[1]->type == LM_GGML_TYPE_F32 &&
-                   op->type == LM_GGML_TYPE_F32 &&
-                   (op->src[0]->type == LM_GGML_TYPE_F16 || op->src[0]->type == LM_GGML_TYPE_F32);
-        case LM_GGML_OP_CONV_2D_DW:
-            return op->src[1]->type == LM_GGML_TYPE_F32 &&
                    op->type == LM_GGML_TYPE_F32 &&
                    (op->src[0]->type == LM_GGML_TYPE_F16 || op->src[0]->type == LM_GGML_TYPE_F32);
         case LM_GGML_OP_UPSCALE:
@@ -1223,7 +1174,6 @@ bool lm_ggml_metal_device_supports_op(lm_ggml_metal_device_t dev, const struct l
         case LM_GGML_OP_ARGSORT:
         case LM_GGML_OP_TOP_K:
         case LM_GGML_OP_ARANGE:
-        case LM_GGML_OP_ROLL:
             return true;
         case LM_GGML_OP_FLASH_ATTN_EXT:
             // for new head sizes, add checks here
@@ -1244,24 +1194,23 @@ bool lm_ggml_metal_device_supports_op(lm_ggml_metal_device_t dev, const struct l
                 return false;
             }
             if (op->src[1]->type != op->src[2]->type) {
-                return false;
-            }
-            switch (op->src[1]->type) {
-                case LM_GGML_TYPE_F32:
-                case LM_GGML_TYPE_F16:
-                case LM_GGML_TYPE_Q8_0:
-                case LM_GGML_TYPE_Q4_0:
-                case LM_GGML_TYPE_Q4_1:
-                case LM_GGML_TYPE_Q5_0:
-                case LM_GGML_TYPE_Q5_1:
-                    break;
-                case LM_GGML_TYPE_BF16:
-                    if (!has_bfloat) {
-                        return false;
-                    }
-                    break;
-                default:
+                // Allow asymmetric K/V for supported mixed pairs:
+                // - turbo x turbo (any combination)
+                // - q8_0 x turbo (either direction)
+                const bool k_is_turbo = (op->src[1]->type == LM_GGML_TYPE_TURBO2_0 ||
+                                         op->src[1]->type == LM_GGML_TYPE_TURBO3_0 ||
+                                         op->src[1]->type == LM_GGML_TYPE_TURBO4_0);
+                const bool v_is_turbo = (op->src[2]->type == LM_GGML_TYPE_TURBO2_0 ||
+                                         op->src[2]->type == LM_GGML_TYPE_TURBO3_0 ||
+                                         op->src[2]->type == LM_GGML_TYPE_TURBO4_0);
+                const bool k_is_q8 = (op->src[1]->type == LM_GGML_TYPE_Q8_0);
+                const bool v_is_q8 = (op->src[2]->type == LM_GGML_TYPE_Q8_0);
+                const bool supported = (k_is_turbo && v_is_turbo) ||
+                                       (k_is_q8 && v_is_turbo) ||
+                                       (k_is_turbo && v_is_q8);
+                if (!supported) {
                     return false;
+                }
             }
             return has_simdgroup_mm; // TODO: over-restricted for vec-kernels
         case LM_GGML_OP_SSM_CONV:
@@ -1272,6 +1221,8 @@ bool lm_ggml_metal_device_supports_op(lm_ggml_metal_device_t dev, const struct l
             return true;
         case LM_GGML_OP_GATED_DELTA_NET:
             return has_simdgroup_reduction && op->src[2]->ne[0] % 32 == 0;
+        case LM_GGML_OP_TURBO_WHT:
+            return op->src[0]->ne[0] % 128 == 0;
         case LM_GGML_OP_SOLVE_TRI:
         case LM_GGML_OP_MUL_MAT:
         case LM_GGML_OP_MUL_MAT_ID:
@@ -1288,7 +1239,6 @@ bool lm_ggml_metal_device_supports_op(lm_ggml_metal_device_t dev, const struct l
                            case LM_GGML_TYPE_F16:
                            case LM_GGML_TYPE_BF16:
                            case LM_GGML_TYPE_Q8_0:
-                           case LM_GGML_TYPE_Q1_0:
                            case LM_GGML_TYPE_Q4_0:
                            case LM_GGML_TYPE_Q4_1:
                            case LM_GGML_TYPE_Q5_0:
@@ -1315,7 +1265,6 @@ bool lm_ggml_metal_device_supports_op(lm_ggml_metal_device_t dev, const struct l
                             default:
                                 return false;
                         }
-                    case LM_GGML_TYPE_Q1_0:
                     case LM_GGML_TYPE_Q4_0:
                     case LM_GGML_TYPE_Q4_1:
                     case LM_GGML_TYPE_Q5_0:
@@ -1338,7 +1287,7 @@ bool lm_ggml_metal_device_supports_op(lm_ggml_metal_device_t dev, const struct l
             return op->src[0]->type != LM_GGML_TYPE_NVFP4;
         case LM_GGML_OP_SET_ROWS:
             {
-                if (op->src[0]->type != LM_GGML_TYPE_F32 && op->src[0]->type != LM_GGML_TYPE_F16) {
+                if (op->src[0]->type != LM_GGML_TYPE_F32) {
                     return false;
                 }
 
@@ -1352,6 +1301,9 @@ bool lm_ggml_metal_device_supports_op(lm_ggml_metal_device_t dev, const struct l
                     case LM_GGML_TYPE_Q5_0:
                     case LM_GGML_TYPE_Q5_1:
                     case LM_GGML_TYPE_IQ4_NL:
+                    case LM_GGML_TYPE_TURBO2_0:
+                    case LM_GGML_TYPE_TURBO3_0:
+                    case LM_GGML_TYPE_TURBO4_0:
                         return true;
                     default:
                         return false;
@@ -1816,47 +1768,6 @@ void lm_ggml_metal_buffer_get_tensor(lm_ggml_metal_buffer_t buf, const struct lm
         [cmd_buf commit];
         [cmd_buf waitUntilCompleted];
     }
-}
-
-bool lm_ggml_metal_buffer_cpy_tensor(lm_ggml_metal_buffer_t buf_dst, const struct lm_ggml_tensor * src, struct lm_ggml_tensor * dst) {
-    lm_ggml_metal_buffer_t buf_src = (lm_ggml_metal_buffer_t)src->buffer->context;
-
-    const size_t size = lm_ggml_nbytes(src);
-
-    // if both buffers are shared, we can use memcpy directly
-    if (buf_dst->is_shared && buf_src->is_shared) {
-        memcpy(dst->data, src->data, size);
-        return true;
-    }
-
-    // for private buffers, we need to use Metal blit commands
-    @autoreleasepool {
-        struct lm_ggml_metal_buffer_id bid_src = lm_ggml_metal_buffer_get_id(buf_src, src);
-        struct lm_ggml_metal_buffer_id bid_dst = lm_ggml_metal_buffer_get_id(buf_dst, dst);
-
-        if (bid_src.metal == nil || bid_dst.metal == nil) {
-            return false;
-        }
-
-        id<MTLCommandBuffer> cmd_buf = [buf_dst->dev->mtl_queue commandBufferWithUnretainedReferences];
-
-        {
-            id<MTLBlitCommandEncoder> encoder = [cmd_buf blitCommandEncoder];
-
-            [encoder copyFromBuffer:bid_src.metal
-                       sourceOffset:bid_src.offs
-                           toBuffer:bid_dst.metal
-                  destinationOffset:bid_dst.offs
-                               size:size];
-
-            [encoder endEncoding];
-        }
-
-        [cmd_buf commit];
-        [cmd_buf waitUntilCompleted];
-    }
-
-    return true;
 }
 
 void lm_ggml_metal_buffer_clear(lm_ggml_metal_buffer_t buf, uint8_t value) {

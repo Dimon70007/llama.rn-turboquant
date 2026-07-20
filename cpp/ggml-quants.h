@@ -14,8 +14,6 @@ extern "C" {
 // NOTE: these functions are defined as LM_GGML_API because they used by the CPU backend
 
 // Quantization
-LM_GGML_API void quantize_row_q1_0_ref(const float * LM_GGML_RESTRICT x, block_q1_0 * LM_GGML_RESTRICT y, int64_t k);
-LM_GGML_API void quantize_row_q2_0_ref(const float * LM_GGML_RESTRICT x, block_q2_0 * LM_GGML_RESTRICT y, int64_t k);
 LM_GGML_API void quantize_row_q4_0_ref(const float * LM_GGML_RESTRICT x, block_q4_0 * LM_GGML_RESTRICT y, int64_t k);
 LM_GGML_API void quantize_row_q4_1_ref(const float * LM_GGML_RESTRICT x, block_q4_1 * LM_GGML_RESTRICT y, int64_t k);
 LM_GGML_API void quantize_row_q5_0_ref(const float * LM_GGML_RESTRICT x, block_q5_0 * LM_GGML_RESTRICT y, int64_t k);
@@ -43,8 +41,6 @@ LM_GGML_API void quantize_row_iq3_s_ref  (const float * LM_GGML_RESTRICT x, bloc
 LM_GGML_API void quantize_row_iq2_s_ref  (const float * LM_GGML_RESTRICT x, block_iq2_s   * LM_GGML_RESTRICT y, int64_t k);
 
 // Dequantization
-LM_GGML_API void dequantize_row_q1_0(const block_q1_0 * LM_GGML_RESTRICT x, float * LM_GGML_RESTRICT y, int64_t k);
-LM_GGML_API void dequantize_row_q2_0(const block_q2_0 * LM_GGML_RESTRICT x, float * LM_GGML_RESTRICT y, int64_t k);
 LM_GGML_API void dequantize_row_q4_0(const block_q4_0 * LM_GGML_RESTRICT x, float * LM_GGML_RESTRICT y, int64_t k);
 LM_GGML_API void dequantize_row_q4_1(const block_q4_1 * LM_GGML_RESTRICT x, float * LM_GGML_RESTRICT y, int64_t k);
 LM_GGML_API void dequantize_row_q5_0(const block_q5_0 * LM_GGML_RESTRICT x, float * LM_GGML_RESTRICT y, int64_t k);
@@ -94,8 +90,6 @@ LM_GGML_API size_t quantize_q3_K(const float * LM_GGML_RESTRICT src, void * LM_G
 LM_GGML_API size_t quantize_q4_K(const float * LM_GGML_RESTRICT src, void * LM_GGML_RESTRICT dst, int64_t nrows, int64_t n_per_row, const float * imatrix);
 LM_GGML_API size_t quantize_q5_K(const float * LM_GGML_RESTRICT src, void * LM_GGML_RESTRICT dst, int64_t nrows, int64_t n_per_row, const float * imatrix);
 LM_GGML_API size_t quantize_q6_K(const float * LM_GGML_RESTRICT src, void * LM_GGML_RESTRICT dst, int64_t nrows, int64_t n_per_row, const float * imatrix);
-LM_GGML_API size_t quantize_q1_0(const float * LM_GGML_RESTRICT src, void * LM_GGML_RESTRICT dst, int64_t nrows, int64_t n_per_row, const float * imatrix);
-LM_GGML_API size_t quantize_q2_0(const float * LM_GGML_RESTRICT src, void * LM_GGML_RESTRICT dst, int64_t nrows, int64_t n_per_row, const float * imatrix);
 LM_GGML_API size_t quantize_q4_0(const float * LM_GGML_RESTRICT src, void * LM_GGML_RESTRICT dst, int64_t nrows, int64_t n_per_row, const float * imatrix);
 LM_GGML_API size_t quantize_q4_1(const float * LM_GGML_RESTRICT src, void * LM_GGML_RESTRICT dst, int64_t nrows, int64_t n_per_row, const float * imatrix);
 LM_GGML_API size_t quantize_q5_0(const float * LM_GGML_RESTRICT src, void * LM_GGML_RESTRICT dst, int64_t nrows, int64_t n_per_row, const float * imatrix);
@@ -104,6 +98,17 @@ LM_GGML_API size_t quantize_q8_0(const float * LM_GGML_RESTRICT src, void * LM_G
 
 LM_GGML_API size_t quantize_mxfp4(const float * LM_GGML_RESTRICT src, void * LM_GGML_RESTRICT dst, int64_t nrows, int64_t n_per_row, const float * imatrix);
 LM_GGML_API size_t quantize_nvfp4(const float * LM_GGML_RESTRICT src, void * LM_GGML_RESTRICT dst, int64_t nrows, int64_t n_per_row, const float * imatrix);
+
+// TurboQuant KV cache compression (arXiv 2504.19874)
+LM_GGML_API void quantize_row_turbo3_0_ref(const float * LM_GGML_RESTRICT x, block_turbo3_0 * LM_GGML_RESTRICT y, int64_t k);
+LM_GGML_API void quantize_row_turbo4_0_ref(const float * LM_GGML_RESTRICT x, block_turbo4_0 * LM_GGML_RESTRICT y, int64_t k);
+LM_GGML_API void dequantize_row_turbo3_0(const block_turbo3_0 * LM_GGML_RESTRICT x, float * LM_GGML_RESTRICT y, int64_t k);
+LM_GGML_API void dequantize_row_turbo4_0(const block_turbo4_0 * LM_GGML_RESTRICT x, float * LM_GGML_RESTRICT y, int64_t k);
+LM_GGML_API size_t quantize_turbo3_0(const float * LM_GGML_RESTRICT src, void * LM_GGML_RESTRICT dst, int64_t nrows, int64_t n_per_row, const float * imatrix);
+LM_GGML_API size_t quantize_turbo4_0(const float * LM_GGML_RESTRICT src, void * LM_GGML_RESTRICT dst, int64_t nrows, int64_t n_per_row, const float * imatrix);
+LM_GGML_API void quantize_row_turbo2_0_ref(const float * LM_GGML_RESTRICT x, block_turbo2_0 * LM_GGML_RESTRICT y, int64_t k);
+LM_GGML_API void dequantize_row_turbo2_0(const block_turbo2_0 * LM_GGML_RESTRICT x, float * LM_GGML_RESTRICT y, int64_t k);
+LM_GGML_API size_t quantize_turbo2_0(const float * LM_GGML_RESTRICT src, void * LM_GGML_RESTRICT dst, int64_t nrows, int64_t n_per_row, const float * imatrix);
 
 LM_GGML_API void lm_iq2xs_init_impl(enum lm_ggml_type type);
 LM_GGML_API void lm_iq2xs_free_impl(enum lm_ggml_type type);

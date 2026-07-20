@@ -60,6 +60,10 @@ static const std::vector<lm_ggml_type> kv_cache_types = {
     LM_GGML_TYPE_IQ4_NL,
     LM_GGML_TYPE_Q5_0,
     LM_GGML_TYPE_Q5_1,
+    // TurboQuant KV (atomicmilkshake/llama-cpp-turboquant)
+    LM_GGML_TYPE_TURBO2_0,
+    LM_GGML_TYPE_TURBO3_0,
+    LM_GGML_TYPE_TURBO4_0,
 };
 
 lm_ggml_type kv_cache_type_from_str(const std::string & s) {

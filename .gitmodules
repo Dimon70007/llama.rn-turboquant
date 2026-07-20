@@ -1,6 +1,7 @@
 [submodule "third_party/llama.cpp"]
 	path = third_party/llama.cpp
-	url = https://github.com/ggml-org/llama.cpp
+	url = git@github.com:atomicmilkshake/llama-cpp-turboquant.git
+	branch = feature/turboquant-kv-cache
 
 [submodule "third_party/OpenCL-ICD-Loader"]
 	path = third_party/OpenCL-ICD-Loader

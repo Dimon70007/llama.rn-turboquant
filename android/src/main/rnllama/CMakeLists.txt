@@ -37,13 +37,22 @@ set(
     ${RNLLAMA_LIB_DIR}/ggml-alloc.c
     ${RNLLAMA_LIB_DIR}/ggml-backend.cpp
     ${RNLLAMA_LIB_DIR}/ggml-backend-dl.cpp
-    ${RNLLAMA_LIB_DIR}/ggml-backend-meta.cpp
     ${RNLLAMA_LIB_DIR}/ggml-backend-reg.cpp
     ${RNLLAMA_LIB_DIR}/ggml-opt.cpp
     ${RNLLAMA_LIB_DIR}/ggml-threading.cpp
     ${RNLLAMA_LIB_DIR}/ggml-quants.c
     ${RNLLAMA_LIB_DIR}/gguf.cpp
+)
 
+# Optional sources (present on some llama.cpp / TurboQuant trees)
+if (EXISTS ${RNLLAMA_LIB_DIR}/ggml-backend-meta.cpp)
+    list(APPEND RNLLAMA_SOURCE_FILES ${RNLLAMA_LIB_DIR}/ggml-backend-meta.cpp)
+endif()
+if (EXISTS ${RNLLAMA_LIB_DIR}/ggml-turbo-quant.c)
+    list(APPEND RNLLAMA_SOURCE_FILES ${RNLLAMA_LIB_DIR}/ggml-turbo-quant.c)
+endif()
+
+list(APPEND RNLLAMA_SOURCE_FILES
     # GGML CPU files (globbed)
     ${GGML_CPU_C_FILES}
     ${GGML_CPU_CPP_FILES}
