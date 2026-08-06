@@ -1,6 +1,8 @@
 # TurboQuant vendor notes
 
-- Nested llama.cpp SoT: `third_party/llama.cpp` → `git@github.com:atomicmilkshake/llama-cpp-turboquant.git` branch `feature/turboquant-kv-cache` (SHA recorded in gitlink).
+- Nested llama.cpp SoT: `third_party/llama.cpp` → `https://github.com/AtomicBot-ai/atomic-llama-cpp-turboquant` branch `feature/turboquant-kv-cache` (aligned with `linux_to_mac` F2 lock).
+- Current lab pin: `519f0c594a8e31467d2e2f2cf17054c9e7e11536` (2026-07-03; includes `LLM_ARCH_GEMMA4`).
+- Legacy remote kept as `atomicmilkshake` (pre-gemma4 pin `8ad0f00e`, 2026-03-31).
 - Sync into `cpp/` via `npm run bootstrap` (patched for optional missing upstream files + `ggml-turbo-quant.c`).
 - JS allowlist: `cache_type_k/v` accepts `turbo2|turbo3|turbo4` (`src/index.ts`).
 - Native map: `cpp/rn-llama.cpp` `kv_cache_types` includes `LM_GGML_TYPE_TURBO{2,3,4}_0`.
