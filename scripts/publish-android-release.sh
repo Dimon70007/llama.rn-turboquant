@@ -109,7 +109,7 @@ TurboQuant Android prebuilts for this llama.rn fork.
 - sha256: \`${SHA256}\`
 - layout: \`android/src/main/jniLibs/{arm64-v8a,x86_64}/\`
 
-echo "Published via \`./scripts/release-android-jni.sh\` / \`publish-android-release.sh\` (operator terminal)."
+Published via \`./scripts/release-android-jni.sh\` / \`publish-android-release.sh\` (operator terminal).
 EOF
 )"
 fi
