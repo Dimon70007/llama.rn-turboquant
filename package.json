@@ -53,6 +53,7 @@
     "pack:android-jni": "./scripts/pack-android-jni-libs.sh",
     "test:android-jni-archive": "jest install/__tests__/validate-android-jni-archive.test.js --runInBand",
     "publish:android-release": "./scripts/publish-android-release.sh",
+    "release:android-jni": "./scripts/release-android-jni.sh",
     "clean": "del-cli example/ios/build"
   },
   "keywords": [

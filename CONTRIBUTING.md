@@ -77,6 +77,10 @@ Native Android core libs ship as a GitHub Release asset (`llama-rn-android-jni-l
 - [`TURBOQUANT.md`](TURBOQUANT.md)
 
 ```sh
+# Preferred one-shot (pack → tests → gh; --clobber by default):
+npm run release:android-jni -- --build
+
+# Or steps:
 npm run pack:android-jni -- --build
 npm run test:android-jni-archive
 npm run publish:android-release -- --clobber

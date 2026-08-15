@@ -8,25 +8,38 @@ Forks can publish Releases (not limited to upstream `mybigday/llama.rn`).
 
 ## One-liner flow (operator)
 
+Preferred — single orchestrator (pack → tests/validate → gh upload; **clobber by default**):
+
 ```bash
 cd vendor/llama.rn-turboquant   # or this package root
 
-# 1) Build core .so + pack + validate layout/sha + pin manifest
-./scripts/pack-android-jni-libs.sh --build
+# jniLibs already built:
+./scripts/release-android-jni.sh
 
-# 2) Jest layout regression tests (also runs inside publish script)
-npm run test:android-jni-archive
+# or rebuild .so then pack + publish:
+./scripts/release-android-jni.sh --build
 
-# 3) You: create/update GitHub Release + upload (requires `gh auth login`)
-#    publish script re-runs tests + validate before any gh upload
-./scripts/publish-android-release.sh --clobber
+# npm alias:
+npm run release:android-jni -- --build
+```
 
-# 4) Commit & push package.json version/repo + install/native-artifacts.json (+ scripts/docs/tests)
-git add package.json install/native-artifacts.json docs/PUBLISH-ANDROID-RELEASE.md \
+Then commit & push pins on the fork:
+
+```bash
+git add package.json install/native-artifacts.json \
+  scripts/release-android-jni.sh scripts/pack-android-jni-libs.sh scripts/publish-android-release.sh \
   install/validate-android-jni-archive.js install/__tests__/validate-android-jni-archive.test.js \
-  scripts/pack-android-jni-libs.sh scripts/publish-android-release.sh
+  docs/PUBLISH-ANDROID-RELEASE.md
 git commit -m "chore: pin Android jniLibs release artifacts"
 git push
+```
+
+### Step-by-step (same pipeline, manual)
+
+```bash
+./scripts/pack-android-jni-libs.sh --build   # pack + validate + pin manifest
+npm run test:android-jni-archive              # also runs inside publish
+./scripts/publish-android-release.sh --clobber
 ```
 
 ## Layout gate (mandatory)
@@ -75,12 +88,14 @@ If tests or validate fail, **do not** upload. Fix the pack and re-run `./scripts
 
 | Script | What it does | Uploads to GitHub? |
 |--------|----------------|--------------------|
+| [`scripts/release-android-jni.sh`](../scripts/release-android-jni.sh) | **One-shot:** pack → publish (`--clobber` default; optional `--build`) | **Yes — only when you run it** |
 | [`scripts/pack-android-jni-libs.sh`](../scripts/pack-android-jni-libs.sh) | Optional `--build`, packs archive, validates, pins sha256 | **No** |
-| [`scripts/publish-android-release.sh`](../scripts/publish-android-release.sh) | Tests + validate, then `gh release create/upload` | **Yes — only when you run it** |
+| [`scripts/publish-android-release.sh`](../scripts/publish-android-release.sh) | Tests + validate, refresh notes, then `gh release create/upload` | **Yes — only when you run it** |
 
 npm aliases:
 
 ```bash
+npm run release:android-jni -- --build   # preferred
 npm run pack:android-jni
 npm run test:android-jni-archive
 npm run publish:android-release -- --clobber

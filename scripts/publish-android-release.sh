@@ -13,6 +13,8 @@
 #   ./scripts/publish-android-release.sh --clobber     # replace existing asset on the tag
 #   ./scripts/publish-android-release.sh --notes-file NOTES.md
 #
+# Prefer the one-shot orchestrator: ./scripts/release-android-jni.sh [--build]
+#
 # Tag is always: v${package.json version}
 # Target commitish: current HEAD (or RELEASE_TARGET env).
 
@@ -107,7 +109,7 @@ TurboQuant Android prebuilts for this llama.rn fork.
 - sha256: \`${SHA256}\`
 - layout: \`android/src/main/jniLibs/{arm64-v8a,x86_64}/\`
 
-Published via \`./scripts/publish-android-release.sh\` (operator terminal).
+echo "Published via \`./scripts/release-android-jni.sh\` / \`publish-android-release.sh\` (operator terminal)."
 EOF
 )"
 fi
@@ -120,7 +122,8 @@ echo "sha256: $SHA256"
 echo ""
 
 if gh release view "$TAG" -R "$OWNER_REPO" >/dev/null 2>&1; then
-  echo "release $TAG already exists — uploading asset"
+  echo "release $TAG already exists — refreshing notes + uploading asset"
+  gh release edit "$TAG" -R "$OWNER_REPO" --title "$TITLE" --notes "$NOTES"
 else
   echo "creating release $TAG"
   gh release create "$TAG" \

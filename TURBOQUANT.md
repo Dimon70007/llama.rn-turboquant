@@ -15,7 +15,7 @@ Android prebuilt Release (pack + publish from **your** terminal only): see [`doc
 **Layout rule:** archive entries must be `android/src/main/jniLibs/...` — never top-level `jniLibs/`. Pack/publish scripts validate this; Jest: `npm run test:android-jni-archive`.
 
 ```bash
-./scripts/pack-android-jni-libs.sh --build   # pack + validate + pin sha256
-npm run test:android-jni-archive             # layout regression (also gated in publish)
-./scripts/publish-android-release.sh --clobber   # gh, operator only — refuses bad layout/sha
+# One-shot (pack → test/validate → gh; clobber by default):
+./scripts/release-android-jni.sh --build
+# or: npm run release:android-jni -- --build
 ```
