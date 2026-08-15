@@ -67,6 +67,23 @@ To publish new versions, run the following:
 npm run release
 ```
 
+### Publishing Android JNI prebuilts (this TurboQuant fork)
+
+Native Android core libs ship as a GitHub Release asset (`llama-rn-android-jni-libs.tar.gz`), not via npm binary blobs.
+
+**Operator-only** (no agent/CI upload). Full runbook + layout gate:
+
+- [`docs/PUBLISH-ANDROID-RELEASE.md`](docs/PUBLISH-ANDROID-RELEASE.md)
+- [`TURBOQUANT.md`](TURBOQUANT.md)
+
+```sh
+npm run pack:android-jni -- --build
+npm run test:android-jni-archive
+npm run publish:android-release -- --clobber
+```
+
+Do **not** hand-pack with `tar -C android/src/main jniLibs` — that produces a top-level `jniLibs/` archive and breaks postinstall. The pack/publish scripts and Jest suite reject that layout.
+
 ### Scripts
 
 The `package.json` file contains various scripts for common tasks:

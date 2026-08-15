@@ -1,7 +1,7 @@
 {
   "name": "llama.rn",
-  "version": "0.12.6",
-  "description": "React Native binding of llama.cpp",
+  "version": "0.12.6-turboquant.1",
+  "description": "React Native binding of llama.cpp (TurboQuant fork)",
   "main": "lib/commonjs/index",
   "module": "lib/module/index",
   "types": "lib/typescript/index.d.ts",
@@ -50,6 +50,9 @@
     "build:ios": "cd example && yarn build:ios",
     "build:android-libs": "./scripts/build-hexagon-htp.sh && ./scripts/build-opencl.sh && ./scripts/build-android.sh",
     "build:android": "cd example && yarn build:android",
+    "pack:android-jni": "./scripts/pack-android-jni-libs.sh",
+    "test:android-jni-archive": "jest install/__tests__/validate-android-jni-archive.test.js --runInBand",
+    "publish:android-release": "./scripts/publish-android-release.sh",
     "clean": "del-cli example/ios/build"
   },
   "keywords": [
@@ -63,16 +66,16 @@
     "llama",
     "llama-2"
   ],
-  "repository": "https://github.com/mybigday/llama.rn",
+  "repository": "https://github.com/Dimon70007/llama.rn-turboquant",
   "bin": {
     "llama-rn-download-artifacts": "./install/download-native-artifacts.js"
   },
   "author": "Jhen-Jie Hong <developer@jhen.me> (https://github.com/mybigday)",
   "license": "MIT",
   "bugs": {
-    "url": "https://github.com/mybigday/llama.rn/issues"
+    "url": "https://github.com/Dimon70007/llama.rn-turboquant/issues"
   },
-  "homepage": "https://github.com/mybigday/llama.rn#readme",
+  "homepage": "https://github.com/Dimon70007/llama.rn-turboquant#readme",
   "publishConfig": {
     "registry": "https://registry.npmjs.org/"
   },

@@ -6,7 +6,7 @@
       "relativePath": "android/src/main/jniLibs",
       "markerPath": "android/src/main/jniLibs/.llama-rn.sha256",
       "legacyMarkerPath": "android/src/main/.llama-rn-android-jni-libs.sha256",
-      "sha256": null
+      "sha256": "c7f6d0ef63b4f4b6296d035b76eade98b6b60280e9f2c081b3430e492069f890"
     },
     {
       "name": "ios-xcframework",

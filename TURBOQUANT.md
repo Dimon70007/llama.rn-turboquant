@@ -9,3 +9,13 @@
 - Android CMake: optional `ggml-turbo-quant.c` / `ggml-backend-meta.cpp`.
 
 Recommended product KV: `cache_type_k: 'q8_0'`, `cache_type_v: 'turbo3'` (asymmetric).
+
+Android prebuilt Release (pack + publish from **your** terminal only): see [`docs/PUBLISH-ANDROID-RELEASE.md`](docs/PUBLISH-ANDROID-RELEASE.md).
+
+**Layout rule:** archive entries must be `android/src/main/jniLibs/...` — never top-level `jniLibs/`. Pack/publish scripts validate this; Jest: `npm run test:android-jni-archive`.
+
+```bash
+./scripts/pack-android-jni-libs.sh --build   # pack + validate + pin sha256
+npm run test:android-jni-archive             # layout regression (also gated in publish)
+./scripts/publish-android-release.sh --clobber   # gh, operator only — refuses bad layout/sha
+```

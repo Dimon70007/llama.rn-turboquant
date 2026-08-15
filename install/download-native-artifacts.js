@@ -68,12 +68,15 @@ function resolveInstalledMarkerPath(artifact) {
   )
 }
 
-function hasConfiguredManifest(artifacts) {
-  return artifacts.every(
-    (artifact) =>
-      typeof artifact.sha256 === 'string' &&
-      /^[\da-f]{64}$/i.test(artifact.sha256),
+function isArtifactConfigured(artifact) {
+  return (
+    typeof artifact.sha256 === 'string' &&
+    /^[\da-f]{64}$/i.test(artifact.sha256)
   )
+}
+
+function configuredArtifacts(artifacts) {
+  return artifacts.filter(isArtifactConfigured)
 }
 
 function writeMarker(markerPath, sha256) {
@@ -223,8 +226,9 @@ async function main() {
   }
 
   const artifacts = manifest.artifacts || []
+  const toConfigure = configuredArtifacts(artifacts)
 
-  if (!hasConfiguredManifest(artifacts)) {
+  if (toConfigure.length === 0) {
     const allTargetsPresent = artifacts.every((artifact) =>
       targetExists(artifact.relativePath),
     )
@@ -238,7 +242,15 @@ async function main() {
     return
   }
 
-  const artifactsToInstall = artifacts.filter((artifact) => {
+  artifacts
+    .filter((artifact) => !isArtifactConfigured(artifact))
+    .forEach((artifact) => {
+      console.log(
+        `llama.rn: skipping ${artifact.name} (sha256 not set; publish later or build from source)`,
+      )
+    })
+
+  const artifactsToInstall = toConfigure.filter((artifact) => {
     const installedMarkerPath = force ? null : resolveInstalledMarkerPath(artifact)
 
     if (installedMarkerPath) {

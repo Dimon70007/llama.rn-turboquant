@@ -20,14 +20,26 @@ function resolveArchivePath(assetName) {
   return path.join(packageRoot, assetName)
 }
 
+let updated = 0
+
 manifest.artifacts.forEach((artifact) => {
   const archivePath = resolveArchivePath(artifact.assetName)
 
   if (!fs.existsSync(archivePath)) {
-    throw new Error(`Missing native artifact archive: ${archivePath}`)
+    console.warn(`skip (missing archive): ${artifact.assetName}`)
+    return
   }
 
   artifact.sha256 = sha256File(archivePath)
+  updated += 1
+  console.log(`${artifact.name}: ${artifact.sha256}`)
 })
 
+if (updated === 0) {
+  throw new Error(
+    'No native artifact archives found next to package root to hash',
+  )
+}
+
 fs.writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`)
+console.log(`Wrote ${updated} sha256 value(s) to ${manifestPath}`)
