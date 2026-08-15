@@ -1,12 +1,28 @@
 #ifndef LM_GGML_METAL_IMPL
 #define LM_GGML_METAL_IMPL
 
+// kernel parameters for mat-mat threadgroups
+//
+// TODO: become function constants
+
+#define SZ_SIMDGROUP 16
+#define N_MM_NK 2
+#define N_MM_NK_TOTAL (SZ_SIMDGROUP * N_MM_NK)
+
+#define N_MM_BLOCK_X 4
+#define N_MM_BLOCK_Y 2
+#define N_MM_SIMD_GROUP_X 2
+#define N_MM_SIMD_GROUP_Y 2
+
 // kernel parameters for mat-vec threadgroups
 //
 // N_R0: number of src0 rows to process per simdgroup
 // N_SG: number of simdgroups per threadgroup
 //
 // TODO: for optimal performance, become function of the device and work size
+
+#define N_R0_Q1_0 8
+#define N_SG_Q1_0 2
 
 #define N_R0_Q4_0 4
 #define N_SG_Q4_0 2
@@ -68,6 +84,12 @@
 #define N_R0_IQ4_XS 2
 #define N_SG_IQ4_XS 2
 
+#define N_R0_TQ3_1S 8
+#define N_SG_TQ3_1S 2
+
+#define N_R0_TQ4_1S 8
+#define N_SG_TQ4_1S 2
+
 // function constants offsets
 #define FC_FLASH_ATTN_EXT_PAD          100
 #define FC_FLASH_ATTN_EXT_BLK          200
@@ -86,6 +108,8 @@
 #define FC_UPSCALE                     1500
 #define FC_GATED_DELTA_NET             1600
 #define FC_TURBO_WHT                   1700
+#define FC_TURBO_FLASH_P1              1800
+#define FC_TURBO_FLASH_P2              1900
 
 // op-specific constants
 #define OP_FLASH_ATTN_EXT_NQPSG 8
@@ -125,6 +149,7 @@
 #define OP_UNARY_NUM_CEIL        118
 #define OP_UNARY_NUM_ROUND       119
 #define OP_UNARY_NUM_TRUNC       120
+#define OP_UNARY_NUM_XIELU       121
 
 #define OP_SUM_ROWS_NUM_SUM_ROWS 10
 #define OP_SUM_ROWS_NUM_MEAN     11
@@ -412,6 +437,40 @@ typedef struct {
     int32_t  n_head_log2;
     float    logit_softcap;
 } lm_ggml_metal_kargs_flash_attn_ext_vec;
+
+// TurboFlash two-pass: asymmetric K=q8_0, V=turbo3 fused attention
+// Pass 1 args (block scoring + partial V accumulation)
+typedef struct {
+    int32_t  ne01;      // number of query heads (batch dim 1)
+    int32_t  ne02;      // number of query heads (batch dim 2)
+    int32_t  ne03;      // number of query heads (batch dim 3)
+    uint64_t nb01;      // Q row stride
+    uint64_t nb02;      // Q head stride
+    uint64_t nb03;      // Q batch stride
+    int32_t  ne11;      // KV sequence length (T_kv)
+    int32_t  ne_12_2;   // KV head count dim 2
+    int32_t  ne_12_3;   // KV head count dim 3
+    uint64_t nb11;      // K row stride (bytes per KV token in K)
+    uint64_t nb12;      // K head stride
+    uint64_t nb13;      // K batch stride
+    uint64_t nb21;      // V row stride (bytes per KV token in V)
+    uint64_t nb22;      // V head stride
+    uint64_t nb23;      // V batch stride
+    int32_t  ne31;      // mask dim 1
+    int32_t  ne32;      // mask dim 2
+    int32_t  ne33;      // mask dim 3
+    uint64_t nb31;      // mask stride 1
+    uint64_t nb32;      // mask stride 2
+    uint64_t nb33;      // mask stride 3
+    float    scale;     // attention scale (1/sqrt(dk))
+    int32_t  n_blocks;  // ceil(ne11 / BLOCK_SIZE)
+} lm_ggml_metal_kargs_turbo_flash_p1;
+
+// Pass 2 args (merge partials + inverse WHT + write output)
+typedef struct {
+    int32_t  ne01;      // number of query heads (total n_bh)
+    int32_t  n_blocks;  // number of blocks from pass 1
+} lm_ggml_metal_kargs_turbo_flash_p2;
 
 typedef struct {
     int32_t  nrows;
@@ -871,6 +930,7 @@ typedef struct {
     uint64_t nb1;
     uint64_t nb2;
     uint64_t nb3;
+    int32_t  keep_intermediates;
 } lm_ggml_metal_kargs_gated_delta_net;
 
 typedef struct {
@@ -1018,6 +1078,29 @@ typedef struct {
     int32_t  p0;
     int32_t  p1;
 } lm_ggml_metal_kargs_pad_reflect_1d;
+
+typedef struct {
+    int64_t  ne00;
+    int64_t  ne01;
+    int64_t  ne02;
+    int64_t  ne03;
+    uint64_t nb00;
+    uint64_t nb01;
+    uint64_t nb02;
+    uint64_t nb03;
+    int64_t  ne0;
+    int64_t  ne1;
+    int64_t  ne2;
+    int64_t  ne3;
+    uint64_t nb0;
+    uint64_t nb1;
+    uint64_t nb2;
+    uint64_t nb3;
+    int32_t  s0;
+    int32_t  s1;
+    int32_t  s2;
+    int32_t  s3;
+} lm_ggml_metal_kargs_roll;
 
 typedef struct {
     uint64_t nb1;

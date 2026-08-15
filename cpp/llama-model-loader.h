@@ -80,6 +80,11 @@ struct llama_model_loader {
     bool check_tensors;
     bool no_alloc;
 
+    // when true, done_getting_tensors() tolerates GGUF files that contain
+    // more tensors than the loader actually requested (e.g. loading a
+    // single combined GGUF as a NextN/MTP draft via params.override_arch).
+    bool partial_load = false;
+
     llama_files files;
     llama_ftype ftype;
     llama_fver  fver;
@@ -184,7 +189,7 @@ struct llama_model_loader {
 
     struct lm_ggml_tensor * create_tensor_as_view(struct lm_ggml_context * ctx, struct lm_ggml_tensor * base, const std::string & name, const std::initializer_list<int64_t> & ne, size_t offset, bool required = true);
 
-    void done_getting_tensors() const;
+    void done_getting_tensors(bool partial = false) const;
 
     void init_mappings(bool prefetch = true, llama_mlocks * mlock_mmaps = nullptr);
 

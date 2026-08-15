@@ -181,7 +181,7 @@
 #            define LM_GGML_API __declspec(dllimport) extern
 #        endif
 #    else
-#        define LM_GGML_API __attribute__ ((visibility ("default"))) extern
+#        define LM_GGML_API __attribute__ ((visibility ("default")))
 #    endif
 #else
 #    define LM_GGML_API extern
@@ -428,16 +428,25 @@ extern "C" {
         // LM_GGML_TYPE_IQ4_NL_8_8 = 38,
         LM_GGML_TYPE_MXFP4   = 39, // MXFP4 (1 block)
         LM_GGML_TYPE_NVFP4   = 40, // NVFP4 (4 blocks, E4M3 scale)
-        LM_GGML_TYPE_TURBO3_0 = 41, // TurboQuant 3-bit KV cache: 2-bit PolarQuant + 1-bit QJL
-        LM_GGML_TYPE_TURBO4_0 = 42, // TurboQuant 4-bit KV cache: 3-bit PolarQuant + 1-bit QJL
-        LM_GGML_TYPE_TURBO2_0 = 43, // TurboQuant 2-bit KV cache: 2-bit PolarQuant (no QJL)
-        LM_GGML_TYPE_COUNT   = 44,
+        LM_GGML_TYPE_Q1_0    = 41,
+        LM_GGML_TYPE_TURBO2_0 = 42, // TurboQuant 2-bit KV cache: WHT + 2-bit PolarQuant
+        LM_GGML_TYPE_TURBO3_0 = 43, // TurboQuant 3-bit KV cache: WHT + 3-bit PolarQuant
+        LM_GGML_TYPE_TURBO4_0 = 44, // TurboQuant 4-bit KV cache: WHT + 4-bit PolarQuant
+        LM_GGML_TYPE_TQ3_1S  = 45, // TurboQuant 3-bit weight: WHT-rotated 8-level Lloyd-Max, block_size=32
+        LM_GGML_TYPE_TQ4_1S  = 46, // TurboQuant 4-bit weight: WHT-rotated 16-level Lloyd-Max, block_size=32
+        LM_GGML_TYPE_COUNT   = 47,
     };
 
     // precision
     enum lm_ggml_prec {
         LM_GGML_PREC_DEFAULT =  0, // stored as lm_ggml_tensor.op_params, 0 by default
         LM_GGML_PREC_F32     = 10,
+    };
+
+    // op hint
+    enum lm_ggml_op_hint {
+        LM_GGML_HINT_NONE             = 0,
+        LM_GGML_HINT_SRC0_IS_HADAMARD = 1,
     };
 
     // model file types
@@ -468,6 +477,7 @@ extern "C" {
         LM_GGML_FTYPE_MOSTLY_BF16    = 24, // except 1d tensors
         LM_GGML_FTYPE_MOSTLY_MXFP4   = 25, // except 1d tensors
         LM_GGML_FTYPE_MOSTLY_NVFP4   = 26, // except 1d tensors
+        LM_GGML_FTYPE_MOSTLY_Q1_0    = 27, // except 1d tensors
     };
 
     // available tensor operations:
@@ -530,6 +540,7 @@ extern "C" {
         LM_GGML_OP_IM2COL,
         LM_GGML_OP_IM2COL_BACK,
         LM_GGML_OP_IM2COL_3D,
+        LM_GGML_OP_COL2IM_1D,
         LM_GGML_OP_CONV_2D,
         LM_GGML_OP_CONV_3D,
         LM_GGML_OP_CONV_2D_DW,
@@ -904,15 +915,17 @@ extern "C" {
             struct lm_ggml_tensor  * b,
             struct lm_ggml_tensor  * ids);
 
-    LM_GGML_API struct lm_ggml_tensor * lm_ggml_add1(
+    LM_GGML_DEPRECATED(LM_GGML_API struct lm_ggml_tensor * lm_ggml_add1(
             struct lm_ggml_context * ctx,
             struct lm_ggml_tensor  * a,
-            struct lm_ggml_tensor  * b);
+            struct lm_ggml_tensor  * b),
+        "use lm_ggml_add instead");
 
-    LM_GGML_API struct lm_ggml_tensor * lm_ggml_add1_inplace(
+    LM_GGML_DEPRECATED(LM_GGML_API struct lm_ggml_tensor * lm_ggml_add1_inplace(
             struct lm_ggml_context * ctx,
             struct lm_ggml_tensor  * a,
-            struct lm_ggml_tensor  * b);
+            struct lm_ggml_tensor  * b),
+        "use lm_ggml_add_inplace instead");
 
     // dst = a
     // view(dst, nb1, nb2, nb3, offset) += b
@@ -1183,8 +1196,8 @@ extern "C" {
             struct lm_ggml_context * ctx,
             struct lm_ggml_tensor  * a);
 
-    // a - x
-    // b - dy
+    // a - dy
+    // b - x
     LM_GGML_API struct lm_ggml_tensor * lm_ggml_silu_back(
             struct lm_ggml_context * ctx,
             struct lm_ggml_tensor  * a,
@@ -1418,6 +1431,11 @@ extern "C" {
     LM_GGML_API void lm_ggml_mul_mat_set_prec(
             struct lm_ggml_tensor * a,
             enum lm_ggml_prec       prec);
+
+    // change the hint of a matrix multiplication
+    LM_GGML_API void lm_ggml_mul_mat_set_hint(
+            struct lm_ggml_tensor * a,
+            enum lm_ggml_op_hint    hint);
 
     // indirect matrix multiplication
     LM_GGML_API struct lm_ggml_tensor * lm_ggml_mul_mat_id(
@@ -1773,8 +1791,32 @@ extern "C" {
             int                   n_dims,
             int                   mode);
 
-    // custom RoPE
+    // RoPE operations with extended options
+    // a is the input tensor to apply RoPE to, shape [n_embd, n_head, n_token]
+    // b is an int32 vector with size n_token
     // c is freq factors (e.g. phi3-128k), (optional)
+    // mode can be LM_GGML_ROPE_TYPE_NORMAL or NEOX; for MROPE and VISION mode, use lm_ggml_rope_multi
+    //
+    // pseudo-code for computing theta:
+    //   for i in [0, n_dims/2):
+    //     theta[i] = b[i] * powf(freq_base, -2.0 * i / n_dims);
+    //     theta[i] = theta[i] / c[i];  # if c is provided, divide theta by c
+    //     theta[i] = rope_yarn(theta[i], ...);  # note: theta = theta * freq_scale is applied here
+    //
+    // other params are used by YaRN RoPE scaling, these default values will disable YaRN:
+    //   freq_scale  = 1.0f
+    //   ext_factor  = 0.0f
+    //   attn_factor = 1.0f
+    //   beta_fast   = 0.0f
+    //   beta_slow   = 0.0f
+    //
+    // example:
+    //   (marking: c = cos, s = sin, 0 = unrotated)
+    //   given a single head with size = 8 --> [00000000]
+    //   LM_GGML_ROPE_TYPE_NORMAL  n_dims = 4 --> [cscs0000]
+    //   LM_GGML_ROPE_TYPE_NORMAL  n_dims = 8 --> [cscscscs]
+    //   LM_GGML_ROPE_TYPE_NEOX    n_dims = 4 --> [ccss0000]
+    //   LM_GGML_ROPE_TYPE_NEOX    n_dims = 8 --> [ccccssss]
     LM_GGML_API struct lm_ggml_tensor * lm_ggml_rope_ext(
             struct lm_ggml_context * ctx,
             struct lm_ggml_tensor  * a,
@@ -1790,6 +1832,36 @@ extern "C" {
             float                 beta_fast,
             float                 beta_slow);
 
+    // multi-dimensional RoPE, for Qwen-VL and similar vision models
+    // mode can be either VISION, MROPE, IMROPE, cannot be combined with NORMAL or NEOX
+    // sections specify how many dimensions to rotate in each section:
+    //   section length is equivalent to number of cos/sin pairs, NOT the number of dims
+    //   (i.e. sum of 4 sections are expected to be n_dims/2)
+    //   last sections can be 0, means ignored
+    // all other options are identical to lm_ggml_rope_ext
+    //
+    // important note:
+    //   - NEOX ordering is automatically applied and cannot be disabled for MROPE and VISION
+    //     if you need normal ordering, there are 2 methods:
+    //     (1) split the tensor manually using lm_ggml_view
+    //     (2) permute the weight upon conversion
+    //   - for VISION, n_dims must be head_size/2
+    //
+    // example M-RoPE:
+    //  given sections = [t=4, y=2, x=2, 0]
+    //  given a single head with size = 18 --> [000000000000000000]
+    //  LM_GGML_ROPE_TYPE_MROPE   n_dims = 16 --> [ttttyyxxttttyyxx00] (cos/sin are applied in NEOX ordering)
+    //  LM_GGML_ROPE_TYPE_IMROPE  n_dims = 16 --> [ttyxttyxttyxttyx00] (interleaved M-RoPE, still NEOX ordering)
+    //  note: the theta for each dim is computed the same way as lm_ggml_rope_ext, no matter the section
+    //        in other words, idx used for theta: [0123456789... until n_dims/2], not reset for each section
+    //
+    // example vision RoPE:
+    //  given sections = [y=4, x=4, 0, 0] (last 2 sections are ignored)
+    //  given a single head with size = 8 --> [00000000]
+    //  LM_GGML_ROPE_TYPE_VISION  n_dims = 4 --> [yyyyxxxx]
+    //  other values of n_dims are untested and is undefined behavior
+    //  note: unlike MROPE, the theta for each dim is computed differently for each section
+    //        in other words, idx used for theta: [0123] for y section, then [0123] for x section
     LM_GGML_API struct lm_ggml_tensor * lm_ggml_rope_multi(
             struct lm_ggml_context * ctx,
             struct lm_ggml_tensor  * a,
@@ -1941,6 +2013,16 @@ extern "C" {
         int                   d0, // dilation dimension 0
         int                   d1, // dilation dimension 1
         bool                  is_2D);
+
+    // col2im_1d: scatter-add GEMM columns back to 1D signal
+    // a: [K*OC, T_in]  (columns from matmul, K = a->ne[0]/OC)
+    // result: [T_out, OC]  where T_out = (T_in - 1)*s0 + K - 2*p0
+    LM_GGML_API struct lm_ggml_tensor * lm_ggml_col2im_1d(
+        struct lm_ggml_context * ctx,
+        struct lm_ggml_tensor  * a,   // columns [K*OC, T_in]
+        int                   s0,  // stride
+        int                   oc,  // output channels
+        int                   p0); // padding to crop from both sides
 
     LM_GGML_API struct lm_ggml_tensor * lm_ggml_conv_1d(
             struct lm_ggml_context * ctx,
@@ -2476,6 +2558,17 @@ extern "C" {
 
     // TODO: add lm_ggml_gated_delta_net_set_bcast() to be able to configure Q, K broadcast type: tiled vs interleaved [TAG_LM_GGML_GDN_BCAST]
     // ref: https://github.com/ggml-org/llama.cpp/pull/19468#discussion_r2786394306
+    //
+    // tensor shapes (S_k == S_v, H_v % H_k == 0):
+    //   q, k  : [S_k, H_k, n_tokens, n_seqs]
+    //   v     : [S_v, H_v, n_tokens, n_seqs]
+    //   g     : [1, H_v, n_tokens, n_seqs] (scalar gate) or [S_v, H_v, n_tokens, n_seqs] (KDA)
+    //   beta  : [1, H_v, n_tokens, n_seqs]
+    //   state : [S_v, S_v, H_v, n_seqs] -- initial recurrent state s0
+    //
+    // the output packs the attention scores [S_v, H_v, n_tokens, n_seqs] followed by K state
+    // snapshots, most-recent first (slot 0 = final state, slot s = state s tokens back). K == 1
+    // keeps only the final state; when n_tokens < K only slots 0..n_tokens-1 are written.
     LM_GGML_API struct lm_ggml_tensor * lm_ggml_gated_delta_net(
             struct lm_ggml_context * ctx,
             struct lm_ggml_tensor  * q,
@@ -2483,7 +2576,8 @@ extern "C" {
             struct lm_ggml_tensor  * v,
             struct lm_ggml_tensor  * g,
             struct lm_ggml_tensor  * beta,
-            struct lm_ggml_tensor  * state);
+            struct lm_ggml_tensor  * state,
+            int64_t               K);
 
     // TurboQuant Walsh-Hadamard Transform (O(d log d) rotation for KV cache compression)
     // Applies WHT rotation to 128-element groups along ne[0]: sign1 → butterfly → sign2 → normalize

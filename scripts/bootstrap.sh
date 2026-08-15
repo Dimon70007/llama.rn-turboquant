@@ -98,7 +98,8 @@ fi
 echo "=========================================="
 echo ""
 
-# Copy if present (TurboQuant / older llama.cpp trees omit some upstream files)
+# Copy if present (TurboQuant / older llama.cpp trees omit some upstream files).
+# If src is missing, remove a stale dst so CMake GLOB does not compile leftovers.
 cp_opt() {
   local src="$1"
   local dst="$2"
@@ -106,6 +107,10 @@ cp_opt() {
     cp "$src" "$dst"
   else
     echo "skip missing: $src"
+    if [ -e "$dst" ]; then
+      rm -f "$dst"
+      echo "removed stale: $dst"
+    fi
   fi
 }
 
@@ -233,6 +238,9 @@ cp ./$LLAMA_DIR/src/llama-model.cpp ./cpp/llama-model.cpp
 cp ./$LLAMA_DIR/src/llama-kv-cells.h ./cpp/llama-kv-cells.h
 cp ./$LLAMA_DIR/src/llama-kv-cache.h ./cpp/llama-kv-cache.h
 cp ./$LLAMA_DIR/src/llama-kv-cache.cpp ./cpp/llama-kv-cache.cpp
+# TurboQuant KV rotation tables (included by llama-kv-cache.cpp)
+cp_opt ./$LLAMA_DIR/src/turbo-rotation-data.h ./cpp/turbo-rotation-data.h
+cp_opt ./$LLAMA_DIR/src/turbo-rotation-data-32.h ./cpp/turbo-rotation-data-32.h
 cp_opt ./$LLAMA_DIR/src/llama-kv-cache-dsa.h ./cpp/llama-kv-cache-dsa.h
 cp_opt ./$LLAMA_DIR/src/llama-kv-cache-dsa.cpp ./cpp/llama-kv-cache-dsa.cpp
 cp_opt ./$LLAMA_DIR/src/llama-kv-cache-dsv4.h ./cpp/llama-kv-cache-dsv4.h
@@ -363,7 +371,9 @@ rm -rf ./cpp/tools/mtmd/stb
 cp -r ./$LLAMA_DIR/vendor/miniaudio ./cpp/tools/mtmd/miniaudio
 cp -r ./$LLAMA_DIR/vendor/stb ./cpp/tools/mtmd/stb
 
-# List of files to process
+# Avoid literal unmatched globs (e.g. opencl/*.h) ending up in the list —
+# unquoted $file then expands to nothing and BSD sed errors: "-i may not be used with stdin".
+shopt -s nullglob
 files_add_lm_prefix=(
   # ggml api
   ./cpp/ggml-metal/*.cpp
@@ -411,10 +421,8 @@ files_add_lm_prefix=(
   ./cpp/common/*.h
   ./cpp/common/*.cpp
 )
+shopt -u nullglob
 
-# Loop through each file and run the sed commands
-# Avoid literal unmatched globs (e.g. opencl/*.h) aborting under bash -e
-shopt -s nullglob
 normalize_lm_prefixes() {
   local file="$1"
 
@@ -444,31 +452,35 @@ for file in "${files_add_lm_prefix[@]}"; do
     continue
   fi
 
+  if [ ! -f "$file" ]; then
+    continue
+  fi
+
   # Add prefix to avoid redefinition with other libraries using ggml like whisper.rn
   if [ "$OS" = "Darwin" ]; then
-    sed -i '' 's/GGML_/LM_GGML_/g' $file
-    sed -i '' 's/ggml_/lm_ggml_/g' $file
-    sed -i '' 's/GGUF_/LM_GGUF_/g' $file
-    sed -i '' 's/gguf_/lm_gguf_/g' $file
-    sed -i '' 's/GGMLMetalClass/LMGGMLMetalClass/g' $file
+    sed -i '' 's/GGML_/LM_GGML_/g' "$file"
+    sed -i '' 's/ggml_/lm_ggml_/g' "$file"
+    sed -i '' 's/GGUF_/LM_GGUF_/g' "$file"
+    sed -i '' 's/gguf_/lm_gguf_/g' "$file"
+    sed -i '' 's/GGMLMetalClass/LMGGMLMetalClass/g' "$file"
 
     # <nlohmann/json.hpp> -> "nlohmann/json.hpp"
-    sed -i '' 's/<nlohmann\/json.hpp>/"nlohmann\/json.hpp"/g' $file
+    sed -i '' 's/<nlohmann\/json.hpp>/"nlohmann\/json.hpp"/g' "$file"
 
     # <nlohmann/json_fwd.hpp> -> "nlohmann/json_fwd.hpp"
-    sed -i '' 's/<nlohmann\/json_fwd.hpp>/"nlohmann\/json_fwd.hpp"/g' $file
+    sed -i '' 's/<nlohmann\/json_fwd.hpp>/"nlohmann\/json_fwd.hpp"/g' "$file"
   else
-    sed -i 's/GGML_/LM_GGML_/g' $file
-    sed -i 's/ggml_/lm_ggml_/g' $file
-    sed -i 's/GGUF_/LM_GGUF_/g' $file
-    sed -i 's/gguf_/lm_gguf_/g' $file
-    sed -i 's/GGMLMetalClass/LMGGMLMetalClass/g' $file
+    sed -i 's/GGML_/LM_GGML_/g' "$file"
+    sed -i 's/ggml_/lm_ggml_/g' "$file"
+    sed -i 's/GGUF_/LM_GGUF_/g' "$file"
+    sed -i 's/gguf_/lm_gguf_/g' "$file"
+    sed -i 's/GGMLMetalClass/LMGGMLMetalClass/g' "$file"
 
     # <nlohmann/json.hpp> -> "nlohmann/json.hpp"
-    sed -i 's/<nlohmann\/json.hpp>/"nlohmann\/json.hpp"/g' $file
+    sed -i 's/<nlohmann\/json.hpp>/"nlohmann\/json.hpp"/g' "$file"
 
     # <nlohmann/json_fwd.hpp> -> "nlohmann/json_fwd.hpp"
-    sed -i 's/<nlohmann\/json_fwd.hpp>/"nlohmann\/json_fwd.hpp"/g' $file
+    sed -i 's/<nlohmann\/json_fwd.hpp>/"nlohmann\/json_fwd.hpp"/g' "$file"
   fi
 
   normalize_lm_prefixes "$file"

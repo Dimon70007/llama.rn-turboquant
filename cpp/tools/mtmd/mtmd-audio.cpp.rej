@@ -1,0 +1,9 @@
+@@ -586,7 +587,7 @@
+ 
+     // because the cgraph in clip.cpp only accepts 3000 frames each, we need to split the mel
+     // we always expect the mel to have 3000 silent frames at the end
+-    if (DEBUG) {
++    if (MTMD_AUDIO_DEBUG) {
+         printf("output: n_mel = %d, n_len = %d\n", (int) out_full.n_mel, (int) out_full.n_len);
+     }
+     const size_t frames_per_chunk = 3000;

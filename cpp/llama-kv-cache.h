@@ -93,8 +93,12 @@ public:
 
     using slot_info_vec_t = std::vector<slot_info>;
 
+    // TODO: refactor the memory instances to not depend on `llama_model`
+    //       instead pass all necessary info (e.g. hparams, dev layers, arch, etc.) directly
+    //       likely through `struct llama_memory_params`
     llama_kv_cache(
             const llama_model & model,
+          const llama_hparams & hparams,
                     lm_ggml_type   type_k,
                     lm_ggml_type   type_v,
                          bool   v_trans,
@@ -105,8 +109,10 @@ public:
                      uint32_t   n_pad,
                      uint32_t   n_swa,
                llama_swa_type   swa_type,
+               llama_memory_t   mem_other,
         const layer_filter_cb & filter,
-        const  layer_reuse_cb & reuse);
+        const  layer_reuse_cb & reuse,
+        const  layer_share_cb & share);
 
     ~llama_kv_cache() = default;
 
@@ -152,6 +158,9 @@ public:
 
     bool get_has_shift() const;
 
+    lm_ggml_type type_k() const;
+    lm_ggml_type type_v() const;
+
     //
     // graph_build API
     //
@@ -190,6 +199,9 @@ public:
     // return empty slot_info on failure
     slot_info find_slot(const llama_ubatch & ubatch, bool cont) const;
 
+    // Gemma4 MTP: one-token slot_info pointing at the last populated cell for seq_id (read-only graphs).
+    slot_info mtp_slot_info(llama_seq_id seq_id) const;
+
     // emplace the ubatch context into slot: [sinfo.idxs[0...ubatch.n_tokens - 1]]
     void apply_ubatch(const slot_info & sinfo, const llama_ubatch & ubatch);
 
@@ -200,6 +212,9 @@ public:
     lm_ggml_tensor * build_input_k_idxs(lm_ggml_context * ctx, const llama_ubatch & ubatch) const;
     lm_ggml_tensor * build_input_v_idxs(lm_ggml_context * ctx, const llama_ubatch & ubatch) const;
 
+    lm_ggml_tensor * build_input_k_rot(lm_ggml_context * ctx) const;
+    lm_ggml_tensor * build_input_v_rot(lm_ggml_context * ctx) const;
+
     void set_input_k_idxs(lm_ggml_tensor * dst, const llama_ubatch * ubatch, const slot_info & sinfo) const;
     void set_input_v_idxs(lm_ggml_tensor * dst, const llama_ubatch * ubatch, const slot_info & sinfo) const;
 
@@ -207,6 +222,9 @@ public:
 
     void set_input_kq_mask   (lm_ggml_tensor * dst, const llama_ubatch * ubatch, bool causal_attn) const;
     void set_input_pos_bucket(lm_ggml_tensor * dst, const llama_ubatch * ubatch) const;
+
+    void set_input_k_rot(lm_ggml_tensor * dst) const;
+    void set_input_v_rot(lm_ggml_tensor * dst) const;
 
 private:
     const llama_model & model;
@@ -235,6 +253,18 @@ private:
     // SWA
     const uint32_t n_swa = 0;
 
+    // env: LLAMA_ATTN_ROT_DISABLE
+    bool attn_rot_k = false;
+    bool attn_rot_v = false;
+
+    // if all layers participating in the cache have constant head size, the value is stored here
+    // otherwise the value is -1
+    int32_t n_embd_head_k_all = 0;
+    int32_t n_embd_head_v_all = 0;
+
+    // pre-computed hadamard martrices
+    std::unordered_map<int64_t, std::vector<float>> attn_rot_hadamard;
+
     // env: LLAMA_KV_CACHE_DEBUG
     int debug = 0;
 
@@ -248,7 +278,12 @@ private:
     // note: this is not part of the KV state and it's only used to speed-up the find_slot() method
     std::vector<uint32_t> v_heads;
 
-    std::vector<llama_kv_cells> v_cells;
+    // TODO: temporary until we refactor to be able to share the same cells between 2 kv caches [TAG_KV_CACHE_SHARE_CELLS]
+    llama_kv_cache * other;
+
+    std::shared_ptr<llama_kv_cells_vec> v_cells_impl;
+
+    llama_kv_cells_vec & v_cells;
 
     // maps from a sequence id to a stream id
     std::vector<uint32_t> seq_to_stream;
@@ -278,6 +313,7 @@ private:
                    lm_ggml_context * ctx,
                     lm_ggml_tensor * cur,
                     lm_ggml_tensor * shift,
+                    lm_ggml_tensor * rot,
                     lm_ggml_tensor * factors,
                           float   freq_base,
                           float   freq_scale,
@@ -344,6 +380,9 @@ public:
 
     uint32_t get_n_kv() const;
 
+    lm_ggml_type type_k() const;
+    lm_ggml_type type_v() const;
+
     // get views of the current state of the cache
     lm_ggml_tensor * get_k(lm_ggml_context * ctx, int32_t il) const;
     lm_ggml_tensor * get_v(lm_ggml_context * ctx, int32_t il) const;
@@ -360,7 +399,7 @@ public:
     lm_ggml_tensor * get_turbo_innerq_scale_inv() const override;
 
     // store k_cur and v_cur in the cache based on the provided head location
-    // note: the heads in k_cur and v_cur should be layed out contiguously in memory
+    // note: the heads in k_cur and v_cur should be laid out contiguously in memory
     //   - k_cur  [n_embd_head_k, n_head_k, n_tokens]
     //   - k_idxs [n_tokens]
     //   - v_cur  [n_embd_head_v, n_head_v, n_tokens]
@@ -374,12 +413,18 @@ public:
     lm_ggml_tensor * build_input_k_idxs(lm_ggml_context * ctx, const llama_ubatch & ubatch) const;
     lm_ggml_tensor * build_input_v_idxs(lm_ggml_context * ctx, const llama_ubatch & ubatch) const;
 
+    lm_ggml_tensor * build_input_k_rot(lm_ggml_context * ctx) const;
+    lm_ggml_tensor * build_input_v_rot(lm_ggml_context * ctx) const;
+
     void set_input_k_idxs(lm_ggml_tensor * dst, const llama_ubatch * ubatch) const;
     void set_input_v_idxs(lm_ggml_tensor * dst, const llama_ubatch * ubatch) const;
 
     void set_input_k_shift   (lm_ggml_tensor * dst) const;
     void set_input_kq_mask   (lm_ggml_tensor * dst, const llama_ubatch * ubatch, bool causal_attn) const;
     void set_input_pos_bucket(lm_ggml_tensor * dst, const llama_ubatch * ubatch) const;
+
+    void set_input_k_rot(lm_ggml_tensor * dst) const;
+    void set_input_v_rot(lm_ggml_tensor * dst) const;
 
 private:
     llama_memory_status status;

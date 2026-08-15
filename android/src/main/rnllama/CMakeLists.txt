@@ -450,7 +450,12 @@ if (ANDROID_ABI AND ANDROID_ABI STREQUAL "arm64-v8a")
     build_rnllama_library("rnllama_v8_2_dotprod" "arm" "-march=armv8.2-a+dotprod")
     build_rnllama_library("rnllama_v8_2_i8mm" "arm" "-march=armv8.2-a+i8mm")
     build_rnllama_library("rnllama_v8_2_dotprod_i8mm" "arm" "-march=armv8.2-a+dotprod+i8mm")
-    build_rnllama_library("rnllama_v8_2_dotprod_i8mm_hexagon_opencl" "arm" "-march=armv8.2-a+dotprod+i8mm")
+    set(OPENCL_STUB_FOR_VARIANT ${CMAKE_CURRENT_SOURCE_DIR}/../../../../bin/${ANDROID_ABI}/libOpenCL.so)
+    if (EXISTS ${OPENCL_STUB_FOR_VARIANT})
+        build_rnllama_library("rnllama_v8_2_dotprod_i8mm_hexagon_opencl" "arm" "-march=armv8.2-a+dotprod+i8mm")
+    else()
+        message(STATUS "Skipping OpenCL rnllama variant — stub not at ${OPENCL_STUB_FOR_VARIANT}")
+    endif()
 
 elseif (ANDROID_ABI AND ANDROID_ABI STREQUAL "x86_64")
     # x86_64 target
