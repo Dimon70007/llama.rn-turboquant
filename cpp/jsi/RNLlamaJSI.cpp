@@ -580,7 +580,11 @@ namespace rnllama_jsi {
 
                          if (ctx->params.embedding && llama_model_has_encoder(ctx->model) && llama_model_has_decoder(ctx->model)) {
                              delete ctx;
-                             throw std::runtime_error("Embedding is not supported in encoder-decoder models");
+                             // Avoid throwing std::exception across .so boundary (Android RTTI → "Unknown error").
+                             std::string err = "Embedding is not supported in encoder-decoder models";
+                             return [err](jsi::Runtime& rt) -> jsi::Value {
+                                 throw jsi::JSError(rt, err);
+                             };
                          }
 
                          std::vector<std::string> usedDevices;
@@ -628,11 +632,23 @@ namespace rnllama_jsi {
                              result.setProperty(rt, "reasonNoGPU", jsi::String::createFromUtf8(rt, reasonNoGPU));
                              result.setProperty(rt, "systemInfo", jsi::String::createFromUtf8(rt, system_info));
 
-                             // Model metadata and chat template capabilities
+                             // Model metadata and chat template capabilities.
+                             // Qwen3.5 hybrid: createModelDetails can throw non-std exceptions on Android
+                             // after loadModel succeeds → opaque "Unknown error (js-callback)".
                              long ctxPtr = g_llamaContexts.get(contextId);
                              if (ctxPtr) {
                                  auto ctx = reinterpret_cast<rnllama::llama_rn_context*>(ctxPtr);
-                                 result.setProperty(rt, "model", createModelDetails(rt, ctx));
+                                 try {
+                                     result.setProperty(rt, "model", createModelDetails(rt, ctx));
+                                 } catch (const std::exception& e) {
+                                     jsi::Object empty(rt);
+                                     empty.setProperty(rt, "desc", jsi::String::createFromUtf8(rt, e.what()));
+                                     result.setProperty(rt, "model", empty);
+                                 } catch (...) {
+                                     jsi::Object empty(rt);
+                                     empty.setProperty(rt, "desc", jsi::String::createFromUtf8(rt, "model-details-failed"));
+                                     result.setProperty(rt, "model", empty);
+                                 }
                              }
 
                              // Maintain shape expected by TypeScript
@@ -646,7 +662,11 @@ namespace rnllama_jsi {
                          };
                     } else {
                         delete ctx;
-                        throw std::runtime_error("Failed to load model");
+                        // Prefer JSError from resultGenerator so RTTI across .so doesn't become "Unknown error".
+                        std::string err = "Failed to load model (context init returned null — see RNLlama loadModel logs)";
+                        return [err](jsi::Runtime& rt) -> jsi::Value {
+                            throw jsi::JSError(rt, err);
+                        };
                     }
                 }, contextId);
             }

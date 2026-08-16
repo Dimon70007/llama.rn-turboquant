@@ -106,7 +106,7 @@ namespace rnllama_jsi {
                                     } catch (const std::exception& e) {
                                         reject->call(rt, createJsiError(rt, e.what()));
                                     } catch (...) {
-                                        reject->call(rt, createJsiError(rt, "Unknown error"));
+                                        reject->call(rt, createJsiError(rt, "Unknown error (js-callback)"));
                                     }
                                 });
                                 invokeScheduled = true;
@@ -151,7 +151,7 @@ namespace rnllama_jsi {
                                     }
                                     TaskFinishGuard guard(contextId, shouldTrack);
                                     auto& rt = *runtimePtr;
-                                    reject->call(rt, createJsiError(rt, "Unknown error"));
+                                    reject->call(rt, createJsiError(rt, "Unknown error (worker)"));
                                 });
                                 invokeScheduled = true;
                             } catch (...) {
