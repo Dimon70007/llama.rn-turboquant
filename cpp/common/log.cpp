@@ -77,7 +77,7 @@ struct common_log_entry {
     // signals the worker thread to stop
     bool is_end;
 
-    #if defined(__ANDROID__) && defined(RNLLAMA_ANDROID_ENABLE_LOGGING)
+#if defined(__ANDROID__) && defined(RNLLAMA_ANDROID_ENABLE_LOGGING)
     void android_print() const {
         int android_log_priority;
         switch (level) {
@@ -101,12 +101,12 @@ struct common_log_entry {
         const char * tag = "RNLLAMA_LOG_ANDROID";
         __android_log_print(android_log_priority, tag, "%s", msg.data());
     }
-    #endif
+#endif
 
     void print(FILE * file = nullptr) const {
-        #if defined(__ANDROID__) && defined(RNLLAMA_ANDROID_ENABLE_LOGGING)
+#if defined(__ANDROID__) && defined(RNLLAMA_ANDROID_ENABLE_LOGGING)
         android_print();
-        #else
+#else
         FILE * fcur = file;
         if (!fcur) {
             // stderr displays DBG messages only when their verbosity level is not higher than the threshold
@@ -151,7 +151,7 @@ struct common_log_entry {
         }
 
         fflush(fcur);
-        #endif
+#endif
     }
 };
 

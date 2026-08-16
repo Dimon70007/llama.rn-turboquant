@@ -4,11 +4,56 @@ project(rnllama)
 
 option(HEXAGON_SDK_ROOT "Hexagon SDK root directory" OFF)
 option(HEXAGON_TOOLS_ROOT "Hexagon SDK toolchain directory" OFF)
+# KleidiAI: ON by default for arm64-v8a (UD-Q4 / iq4_xs path). Off for x86_64 / non-Android.
+if (ANDROID_ABI AND ANDROID_ABI STREQUAL "arm64-v8a")
+    option(RNLLAMA_ENABLE_KLEIDIAI "Link Arm KleidiAI CPU kernels into rnllama" ON)
+else()
+    option(RNLLAMA_ENABLE_KLEIDIAI "Link Arm KleidiAI CPU kernels into rnllama" OFF)
+endif()
 
 find_package(Python3 REQUIRED)
 set(CMAKE_CXX_STANDARD 17)
 # Use CMAKE_CURRENT_SOURCE_DIR to work correctly both standalone and as subdirectory
 set(RNLLAMA_LIB_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../../../cpp)
+
+# Fetch Arm KleidiAI once (parity with llama.cpp ggml GGML_CPU_KLEIDIAI=ON, v1.24.0).
+# Glue lives under cpp/ggml-cpu/kleidiai/ (bootstrap); kai/ ukernels come from this tarball.
+set(RNLLAMA_KLEIDIAI_SRC "")
+if (RNLLAMA_ENABLE_KLEIDIAI)
+    message(STATUS "rnllama: KleidiAI enabled (FetchContent v1.24.0)")
+    set(KLEIDIAI_BUILD_TESTS OFF)
+    include(FetchContent)
+    set(KLEIDIAI_COMMIT_TAG "v1.24.0")
+    set(KLEIDIAI_DOWNLOAD_URL "https://github.com/ARM-software/kleidiai/releases/download/${KLEIDIAI_COMMIT_TAG}/kleidiai-${KLEIDIAI_COMMIT_TAG}-src.tar.gz")
+    set(KLEIDIAI_RELEASE_ARCHIVE_MD5 "2f02ebe29573d45813e671eb304f2a00")
+    set(KLEIDIAI_FETCH_ARGS
+        URL ${KLEIDIAI_DOWNLOAD_URL}
+        URL_HASH MD5=${KLEIDIAI_RELEASE_ARCHIVE_MD5}
+    )
+    if (CMAKE_VERSION VERSION_GREATER_EQUAL "3.24")
+        list(APPEND KLEIDIAI_FETCH_ARGS DOWNLOAD_EXTRACT_TIMESTAMP NEW)
+    endif()
+    if (CMAKE_VERSION VERSION_GREATER_EQUAL "3.28")
+        FetchContent_Declare(KleidiAI_Download
+            ${KLEIDIAI_FETCH_ARGS}
+            EXCLUDE_FROM_ALL
+        )
+        FetchContent_MakeAvailable(KleidiAI_Download)
+        FetchContent_GetProperties(KleidiAI_Download SOURCE_DIR RNLLAMA_KLEIDIAI_SRC)
+    else()
+        FetchContent_Declare(KleidiAI_Download
+            ${KLEIDIAI_FETCH_ARGS}
+        )
+        FetchContent_GetProperties(KleidiAI_Download
+            SOURCE_DIR RNLLAMA_KLEIDIAI_SRC
+            POPULATED KLEIDIAI_POPULATED
+        )
+        if (NOT KLEIDIAI_POPULATED)
+            FetchContent_Populate(KleidiAI_Download)
+            FetchContent_GetProperties(KleidiAI_Download SOURCE_DIR RNLLAMA_KLEIDIAI_SRC)
+        endif()
+    endif()
+endif()
 
 include_directories(
     ${RNLLAMA_LIB_DIR}
@@ -134,6 +179,67 @@ function(build_rnllama_library target_name arch cpu_flags)
     if (CMAKE_BUILD_TYPE AND CMAKE_BUILD_TYPE STREQUAL "Debug")
         target_compile_options(${target_name} PRIVATE -DRNLLAMA_ANDROID_ENABLE_LOGGING)
     endif ()
+
+    # KleidiAI (arm64): only variants with +dotprod (POCO loads v8_2_dotprod*).
+    # Skip generic/v8/v8_2/i8mm-only — kernels.cpp needs __ARM_FEATURE_DOTPROD for usable tables,
+    # and shared kai .c paths must not get conflicting set_source_files_properties across targets.
+    if (RNLLAMA_ENABLE_KLEIDIAI AND RNLLAMA_KLEIDIAI_SRC)
+        string(FIND "${cpu_flags}" "+dotprod" _kleidi_dotprod)
+        string(FIND "${cpu_flags}" "+i8mm" _kleidi_i8mm)
+
+        if (NOT _kleidi_dotprod EQUAL -1)
+            if (NOT EXISTS ${RNLLAMA_LIB_DIR}/ggml-cpu/kleidiai/kleidiai.cpp)
+                message(FATAL_ERROR
+                    "KleidiAI glue missing at ${RNLLAMA_LIB_DIR}/ggml-cpu/kleidiai/. "
+                    "Run npm run bootstrap in vendor/llama.rn-turboquant.")
+            endif()
+
+            target_compile_definitions(${target_name} PRIVATE LM_GGML_USE_CPU_KLEIDIAI)
+
+            target_include_directories(${target_name} PRIVATE
+                ${RNLLAMA_KLEIDIAI_SRC}/
+                ${RNLLAMA_KLEIDIAI_SRC}/kai/
+                ${RNLLAMA_KLEIDIAI_SRC}/kai/ukernels/
+                ${RNLLAMA_KLEIDIAI_SRC}/kai/ukernels/matmul/
+                ${RNLLAMA_KLEIDIAI_SRC}/kai/ukernels/matmul/matmul_clamp_f32_qsi8d32p_qsi4c32p/
+                ${RNLLAMA_KLEIDIAI_SRC}/kai/ukernels/matmul/matmul_clamp_f32_qai8dxp_qsi8cxp/
+                ${RNLLAMA_KLEIDIAI_SRC}/kai/ukernels/matmul/matmul_clamp_fp32_bf16p_bf16p/
+                ${RNLLAMA_KLEIDIAI_SRC}/kai/ukernels/matmul/matmul_clamp_f32_f16p_qsi4c32p/
+                ${RNLLAMA_KLEIDIAI_SRC}/kai/ukernels/matmul/pack/
+            )
+
+            set(KLEIDIAI_TARGET_SOURCES
+                ${RNLLAMA_LIB_DIR}/ggml-cpu/kleidiai/kleidiai.cpp
+                ${RNLLAMA_LIB_DIR}/ggml-cpu/kleidiai/kernels.cpp
+                ${RNLLAMA_KLEIDIAI_SRC}/kai/ukernels/matmul/pack/kai_lhs_quant_pack_qsi8d32p_f32.c
+                ${RNLLAMA_KLEIDIAI_SRC}/kai/ukernels/matmul/pack/kai_lhs_quant_pack_qsi8d32p4x8sb_f32_neon.c
+                ${RNLLAMA_KLEIDIAI_SRC}/kai/ukernels/matmul/pack/kai_rhs_pack_nxk_qsi4c32ps1s0scalef16_qsu4c32s16s0_neon.c
+                ${RNLLAMA_KLEIDIAI_SRC}/kai/ukernels/matmul/pack/kai_lhs_quant_pack_qsi8d32p_f32_neon.c
+                ${RNLLAMA_KLEIDIAI_SRC}/kai/ukernels/matmul/pack/kai_rhs_pack_nxk_qsi4c32pscalef16_qsu4c32s16s0.c
+                ${RNLLAMA_KLEIDIAI_SRC}/kai/ukernels/matmul/pack/kai_lhs_quant_pack_qai8dxp_f32.c
+                ${RNLLAMA_KLEIDIAI_SRC}/kai/ukernels/matmul/pack/kai_rhs_pack_nxk_qsi8cxp_qsi8cx_neon.c
+                ${RNLLAMA_KLEIDIAI_SRC}/kai/ukernels/matmul/matmul_clamp_f32_qsi8d32p_qsi4c32p/kai_matmul_clamp_f32_qsi8d32p1x8_qsi4c32p4x8_1x4x32_neon_dotprod.c
+                ${RNLLAMA_KLEIDIAI_SRC}/kai/ukernels/matmul/matmul_clamp_f32_qsi8d32p_qsi4c32p/kai_matmul_clamp_f32_qsi8d32p1x4_qsi4c32p4x4_1x4_neon_dotprod.c
+                ${RNLLAMA_KLEIDIAI_SRC}/kai/ukernels/matmul/matmul_clamp_f32_qsi8d32p_qsi4c32p/kai_matmul_clamp_f32_qsi8d32p4x4_qsi4c32p4x4_16x4_neon_dotprod.c
+                ${RNLLAMA_KLEIDIAI_SRC}/kai/ukernels/matmul/matmul_clamp_f32_qai8dxp_qsi8cxp/kai_matmul_clamp_f32_qai8dxp4x4_qsi8cxp4x4_16x4_neon_dotprod.c
+                ${RNLLAMA_KLEIDIAI_SRC}/kai/ukernels/matmul/matmul_clamp_f32_qai8dxp_qsi8cxp/kai_matmul_clamp_f32_qai8dxp1x4_qsi8cxp4x4_1x4_neon_dotprod.c
+                ${RNLLAMA_KLEIDIAI_SRC}/kai/ukernels/matmul/matmul_clamp_f32_qai8dxp_qsi8cxp/kai_matmul_clamp_f32_qai8dxp1x8_qsi8cxp4x8_1x4_neon_dotprod.c
+            )
+
+            if (NOT _kleidi_i8mm EQUAL -1)
+                list(APPEND KLEIDIAI_TARGET_SOURCES
+                    ${RNLLAMA_KLEIDIAI_SRC}/kai/ukernels/matmul/matmul_clamp_f32_qsi8d32p_qsi4c32p/kai_matmul_clamp_f32_qsi8d32p4x8_qsi4c32p4x8_16x4_neon_i8mm.c
+                    ${RNLLAMA_KLEIDIAI_SRC}/kai/ukernels/matmul/matmul_clamp_f32_qai8dxp_qsi8cxp/kai_matmul_clamp_f32_qai8dxp4x8_qsi8cxp4x8_16x4_neon_i8mm.c
+                )
+            endif()
+
+            # Per-target objects; cpu_flags already on the target (no global set_source_files_properties).
+            target_sources(${target_name} PRIVATE ${KLEIDIAI_TARGET_SOURCES})
+            message(STATUS "KleidiAI sources linked into ${target_name}")
+        else()
+            message(STATUS "KleidiAI skipped for ${target_name} (need +dotprod in march)")
+        endif()
+    endif()
 
     # Hexagon backend support
     # Note: Hexagon requires building DSP libraries with Hexagon SDK toolchain

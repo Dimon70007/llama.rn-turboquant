@@ -195,6 +195,8 @@ cp ./$LLAMA_DIR/ggml/src/ggml-cpu/ops.h ./cpp/ggml-cpu/ops.h
 cp ./$LLAMA_DIR/ggml/src/ggml-cpu/ops.cpp ./cpp/ggml-cpu/ops.cpp
 
 cp -r ./$LLAMA_DIR/ggml/src/ggml-cpu/amx ./cpp/ggml-cpu/
+# KleidiAI glue (Arm kai/ ukernels fetched at Android CMake time — not vendored here)
+cp -r ./$LLAMA_DIR/ggml/src/ggml-cpu/kleidiai ./cpp/ggml-cpu/
 mkdir -p ./cpp/ggml-cpu/arch
 cp -r ./$LLAMA_DIR/ggml/src/ggml-cpu/arch/arm ./cpp/ggml-cpu/arch/
 cp -r ./$LLAMA_DIR/ggml/src/ggml-cpu/arch/x86 ./cpp/ggml-cpu/arch/
@@ -396,6 +398,8 @@ files_add_lm_prefix=(
   ./cpp/ggml-cpu/*.cpp
   ./cpp/ggml-cpu/amx/*.h
   ./cpp/ggml-cpu/amx/*.cpp
+  ./cpp/ggml-cpu/kleidiai/*.h
+  ./cpp/ggml-cpu/kleidiai/*.cpp
   ./cpp/ggml-cpu/arch/arm/*.c
   ./cpp/ggml-cpu/arch/arm/*.cpp
   ./cpp/ggml-cpu/arch/x86/*.c
